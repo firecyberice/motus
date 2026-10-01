@@ -68,4 +68,22 @@ var (
 		},
 		[]string{"channel", "status"},
 	)
+
+	// GeocodingRequests counts reverse geocoding requests sent to the provider.
+	GeocodingRequests = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "motus_geocoding_requests_total",
+			Help: "Reverse geocoding requests sent to the provider",
+		},
+		[]string{"result"},
+	)
+
+	// GeocodingPrefetchDropped counts background geocoding requests dropped
+	// because the prefetch queue was full.
+	GeocodingPrefetchDropped = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "motus_geocoding_prefetch_dropped_total",
+			Help: "Background geocoding requests dropped because the queue was full",
+		},
+	)
 )

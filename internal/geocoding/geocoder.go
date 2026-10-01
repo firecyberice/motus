@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/tamcore/motus/internal/metrics"
 )
 
 // Geocoder converts latitude/longitude coordinates into a human-readable address.
@@ -53,6 +55,10 @@ type NominatimConfig struct {
 
 	// Logger receives geocoder logs. Default: slog.Default()
 	Logger *slog.Logger
+
+	// Limiter overrides the per-process RateLimit limiter, e.g. with a
+	// RedisLimiter shared by all pods.
+	Limiter Limiter
 }
 
 // nominatimResponse is the JSON structure returned by Nominatim /reverse.
@@ -65,7 +71,7 @@ type nominatimResponse struct {
 type NominatimGeocoder struct {
 	url       string
 	client    *http.Client
-	limiter   *rate.Limiter
+	limiter   Limiter
 	userAgent string
 	logger    *slog.Logger
 }
@@ -90,7 +96,7 @@ func NewNominatimGeocoder(cfg NominatimConfig) *NominatimGeocoder {
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		limiter:   rate.NewLimiter(rate.Limit(cfg.RateLimit), 1),
+		limiter:   cmp.Or[Limiter](cfg.Limiter, rate.NewLimiter(rate.Limit(cfg.RateLimit), 1)),
 		userAgent: cfg.UserAgent,
 		logger:    cmp.Or(cfg.Logger, slog.Default()),
 	}
@@ -113,6 +119,16 @@ func (g *NominatimGeocoder) ReverseGeocode(ctx context.Context, lat, lon float64
 		return fallback, fmt.Errorf("rate limit wait: %w", err)
 	}
 
+	addr, err := g.reverseGeocode(ctx, lat, lon, fallback)
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	metrics.GeocodingRequests.WithLabelValues(result).Inc()
+	return addr, err
+}
+
+func (g *NominatimGeocoder) reverseGeocode(ctx context.Context, lat, lon float64, fallback string) (string, error) {
 	reqURL := fmt.Sprintf("%s?lat=%.6f&lon=%.6f&format=json&zoom=18&addressdetails=0", g.url, lat, lon)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)

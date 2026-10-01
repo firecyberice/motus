@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
+	"github.com/tamcore/motus/internal/geo"
+	"github.com/tamcore/motus/internal/geocoding"
 	"github.com/tamcore/motus/internal/metrics"
 	"github.com/tamcore/motus/internal/model"
 	"github.com/tamcore/motus/internal/storage/repository"
@@ -32,12 +35,29 @@ type MileageChecker interface {
 	ProcessPosition(ctx context.Context, position *model.Position, device *model.Device) error
 }
 
-// AddressLookup provides reverse geocoding for positions. The returned address
-// is set on the position's Address field for API responses and WebSocket
-// broadcasts. It is NOT stored in the database -- that is handled separately
-// by the idle service for stopped positions.
+// AddressLookup provides cached reverse geocoding for positions without
+// blocking ingest. The address is set on the position's Address field for API
+// responses and WebSocket broadcasts. It is NOT stored in the database -- that
+// is handled separately by the idle service for stopped positions.
 type AddressLookup interface {
-	Lookup(ctx context.Context, lat, lon float64) string
+	Peek(lat, lon float64) (string, bool)
+	Prefetch(key int64, lat, lon float64)
+	Resolved(key int64) (geocoding.Resolved, bool)
+}
+
+const (
+	// addressReuseMeters is the distance within which a device reuses its
+	// last address without a new lookup.
+	addressReuseMeters = 50.0
+	// addressStaleMeters bounds how far a device may be from its last address
+	// while a fresher lookup is pending.
+	addressStaleMeters = 1000.0
+)
+
+type deviceAddress struct {
+	lat, lon float64
+	address  string
+	at       time.Time
 }
 
 // PositionHandler processes incoming GPS positions from protocol decoders.
@@ -49,6 +69,8 @@ type PositionHandler struct {
 	checks         []namedCheck
 	mileage        MileageChecker
 	addressLookup  AddressLookup
+	addressMu      sync.Mutex
+	addresses      map[int64]deviceAddress
 	logger         *slog.Logger
 }
 
@@ -64,6 +86,7 @@ func NewPositionHandler(
 		devices:        devices,
 		hub:            hub,
 		geofenceEvents: geofenceEvents,
+		addresses:      make(map[int64]deviceAddress),
 		logger:         slog.Default(),
 	}
 }
@@ -80,8 +103,9 @@ func (h *PositionHandler) SetMileageChecker(checker MileageChecker) {
 }
 
 // SetAddressLookup sets the geocoding service for enriching positions with
-// cached addresses. When set, each incoming position will have its Address
-// field populated from the geocoding cache or a fresh lookup.
+// cached addresses. When set, each incoming position gets the device's last
+// address if it moved less than addressReuseMeters, else a cached address; on
+// a cache miss the Address stays nil and the lookup runs in the background.
 func (h *PositionHandler) SetAddressLookup(lookup AddressLookup) {
 	h.addressLookup = lookup
 }
@@ -136,6 +160,34 @@ func (h *PositionHandler) LastPosition(ctx context.Context, deviceID int64) *mod
 	return pos
 }
 
+// address returns the live address for pos without blocking: the device's
+// last address when close enough, else a cached one. A miss requests a
+// background lookup for the device, whose result a later fix picks up.
+func (h *PositionHandler) address(pos *model.Position) *string {
+	h.addressMu.Lock()
+	defer h.addressMu.Unlock()
+	d, known := h.addresses[pos.DeviceID]
+	if r, ok := h.addressLookup.Resolved(pos.DeviceID); ok && (!known || r.RequestedAt.After(d.at)) {
+		d, known = deviceAddress{r.Lat, r.Lon, r.Address, r.RequestedAt}, true
+		h.addresses[pos.DeviceID] = d
+	}
+	distance := func() float64 {
+		return geo.HaversineDistance(d.lat, d.lon, pos.Latitude, pos.Longitude) * 1000
+	}
+	if known && distance() < addressReuseMeters {
+		return new(d.address)
+	}
+	if addr, ok := h.addressLookup.Peek(pos.Latitude, pos.Longitude); ok {
+		h.addresses[pos.DeviceID] = deviceAddress{pos.Latitude, pos.Longitude, addr, time.Now()}
+		return new(addr)
+	}
+	h.addressLookup.Prefetch(pos.DeviceID, pos.Latitude, pos.Longitude)
+	if known && distance() < addressStaleMeters {
+		return new(d.address)
+	}
+	return nil
+}
+
 // HandlePosition stores a position and broadcasts it via WebSocket.
 func (h *PositionHandler) HandlePosition(ctx context.Context, pos *model.Position) error {
 	// Determine motion state from position speed.
@@ -160,8 +212,7 @@ func (h *PositionHandler) HandlePosition(ctx context.Context, pos *model.Positio
 	// address is not persisted (stored addresses are handled by the idle
 	// service for stopped positions only).
 	if h.addressLookup != nil && pos.Address == nil {
-		addr := h.addressLookup.Lookup(ctx, pos.Latitude, pos.Longitude)
-		pos.Address = &addr
+		pos.Address = h.address(pos)
 	}
 
 	// Update device status and record last_update.
