@@ -3031,10 +3031,13 @@ type Device struct {
 	ExpirationTime OptNilDateTime `json:"expirationTime"`
 	Disabled       bool           `json:"disabled"`
 	Mileage        OptNilFloat64  `json:"mileage"`
-	Attributes     Attributes     `json:"attributes"`
-	OwnerName      OptString      `json:"ownerName"`
-	CreatedAt      time.Time      `json:"createdAt"`
-	UpdatedAt      time.Time      `json:"updatedAt"`
+	// Last battery charge in percent (0-100) reported by the device (position attribute batteryLevel;
+	// Watch and OsmAnd). Null when the device never reported a battery percentage (e.g. H02).
+	BatteryLevel OptNilFloat64 `json:"batteryLevel"`
+	Attributes   Attributes    `json:"attributes"`
+	OwnerName    OptString     `json:"ownerName"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	UpdatedAt    time.Time     `json:"updatedAt"`
 }
 
 // GetID returns the value of ID.
@@ -3120,6 +3123,11 @@ func (s *Device) GetDisabled() bool {
 // GetMileage returns the value of Mileage.
 func (s *Device) GetMileage() OptNilFloat64 {
 	return s.Mileage
+}
+
+// GetBatteryLevel returns the value of BatteryLevel.
+func (s *Device) GetBatteryLevel() OptNilFloat64 {
+	return s.BatteryLevel
 }
 
 // GetAttributes returns the value of Attributes.
@@ -3225,6 +3233,11 @@ func (s *Device) SetDisabled(val bool) {
 // SetMileage sets the value of Mileage.
 func (s *Device) SetMileage(val OptNilFloat64) {
 	s.Mileage = val
+}
+
+// SetBatteryLevel sets the value of BatteryLevel.
+func (s *Device) SetBatteryLevel(val OptNilFloat64) {
+	s.BatteryLevel = val
 }
 
 // SetAttributes sets the value of Attributes.
@@ -6407,7 +6420,8 @@ func (s *Position) SetNetwork(val Attributes) {
 //
 //   - All: motion (bool)
 //   - H02: ignition (bool), flags (string), alarm (string), mcc/mnc/lac/cellId (int), iccid (string)
-//   - Watch: satellites (int) Open for forward compatibility with additional protocols.
+//   - Watch: satellites (int), batteryLevel (int, percent)
+//   - OsmAnd: batteryLevel (number, percent) Open for forward compatibility with additional protocols.
 //
 // Ref: #/components/schemas/PositionAttributes
 type PositionAttributes struct {
