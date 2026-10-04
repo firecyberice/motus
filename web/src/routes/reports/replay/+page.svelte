@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { RELATIVE_DATE_PRESETS, dateValue, resolveDatePreset, type DatePreset } from '$lib/utils/date-range';
+	import { dateValue, resolveDatePreset, type DatePreset } from '$lib/utils/date-range';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { page } from '$app/stores';
 	import { api, fetchDevices } from '$lib/api/client';
 	import { refreshHandler } from '$lib/stores/refresh';
 	import { useLeaflet } from '$lib/composables/useLeaflet';
 	import { theme } from '$lib/stores/theme';
-	import { haversineDistance } from '$lib/utils/trips';
+	import { pathDistance } from '$lib/utils/trips';
+	import { interpolatePosition } from '$lib/utils/replay';
 	import { toRoutePositions, type RoutePosition as Position } from '$lib/utils/route-points';
 	import { normalizeTimeParam } from '$lib/utils/report-links';
 	import { downloadGPX } from '$lib/utils/gpx';
@@ -16,6 +17,7 @@
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import AllDevicesToggle from '$lib/components/AllDevicesToggle.svelte';
+	import DateRangeFilter from '$lib/components/DateRangeFilter.svelte';
 
 	Chart.register(...registerables);
 
@@ -30,24 +32,6 @@
 			isDark = t !== 'light';
 		}
 	});
-
-	// ---------------------------------------------------------------------------
-	// Helpers
-	// ---------------------------------------------------------------------------
-	function getTime(pos: Position): string {
-		return pos.fixTime;
-	}
-
-	function calcTotalDistance(positions: Position[]): number {
-		let total = 0;
-		for (let i = 1; i < positions.length; i++) {
-			total += haversineDistance(
-				positions[i - 1].latitude, positions[i - 1].longitude,
-				positions[i].latitude, positions[i].longitude
-			);
-		}
-		return total;
-	}
 
 	// ---------------------------------------------------------------------------
 	// Leaflet composable
@@ -122,17 +106,17 @@
 	// Derived values
 	// ---------------------------------------------------------------------------
 	$: currentPosition = positions.length > 0 ? positions[currentIndex] : null;
-	$: totalDistance = positions.length > 1 ? calcTotalDistance(positions) : 0;
+	$: totalDistance = positions.length > 1 ? pathDistance(positions) : 0;
 	$: traveledDistance = currentIndex > 0
-		? calcTotalDistance(positions.slice(0, currentIndex + 1))
+		? pathDistance(positions.slice(0, currentIndex + 1))
 		: 0;
 	$: totalDurationSec = positions.length > 1
-		? (new Date(getTime(positions[positions.length - 1])).getTime()
-			- new Date(getTime(positions[0])).getTime()) / 1000
+		? (new Date(positions[positions.length - 1].fixTime).getTime()
+			- new Date(positions[0].fixTime).getTime()) / 1000
 		: 0;
 	$: elapsedDurationSec = currentIndex > 0 && positions.length > 1
-		? (new Date(getTime(positions[currentIndex])).getTime()
-			- new Date(getTime(positions[0])).getTime()) / 1000
+		? (new Date(positions[currentIndex].fixTime).getTime()
+			- new Date(positions[0].fixTime).getTime()) / 1000
 		: 0;
 	$: avgSpeed = totalDurationSec > 0 ? totalDistance / (totalDurationSec / 3600) : 0;
 	$: maxSpeed = positions.length > 0
@@ -154,7 +138,6 @@
 		await leafletMap.initialize(mapEl, {
 			center: [49.79, 9.95],
 			zoom: 6,
-			zoomControl: true,
 		});
 
 		await reloadDevices();
@@ -212,7 +195,7 @@
 		try {
 			const raw = await api.getPositionPoints({ deviceId, from, to, limit: 10000 });
 			const sorted = toRoutePositions(raw).sort(
-				(a, b) => new Date(getTime(a)).getTime() - new Date(getTime(b)).getTime()
+				(a, b) => new Date(a.fixTime).getTime() - new Date(b.fixTime).getTime()
 			);
 			positions = sorted;
 			hasAltitudeData = positions.some((p) => p.altitude != null && p.altitude !== 0);
@@ -370,26 +353,6 @@
 	}
 
 	// ---------------------------------------------------------------------------
-	// Interpolation helper for smooth animation
-	// ---------------------------------------------------------------------------
-	function getInterpolatedPosition(
-		p1: Position,
-		p2: Position,
-		fraction: number
-	): { lat: number; lng: number; course: number } {
-		const lat = p1.latitude + (p2.latitude - p1.latitude) * fraction;
-		const lng = p1.longitude + (p2.longitude - p1.longitude) * fraction;
-		// Interpolate course angle (handle wrapping)
-		const c1 = p1.course ?? 0;
-		const c2 = p2.course ?? 0;
-		let diff = c2 - c1;
-		if (diff > 180) diff -= 360;
-		if (diff < -180) diff += 360;
-		const course = c1 + diff * fraction;
-		return { lat, lng, course };
-	}
-
-	// ---------------------------------------------------------------------------
 	// Playback engine using requestAnimationFrame
 	// ---------------------------------------------------------------------------
 	function startPlayback() {
@@ -416,8 +379,8 @@
 
 		// How much GPS time should advance
 		if (currentIndex < positions.length - 1) {
-			const currentTime = new Date(getTime(positions[currentIndex])).getTime();
-			const nextTime = new Date(getTime(positions[currentIndex + 1])).getTime();
+			const currentTime = new Date(positions[currentIndex].fixTime).getTime();
+			const nextTime = new Date(positions[currentIndex + 1].fixTime).getTime();
 			const gpsDelta = nextTime - currentTime;
 
 			if (gpsDelta <= 0 || accumulatedTime >= gpsDelta) {
@@ -434,7 +397,7 @@
 			} else {
 				// Interpolate between current and next position for smooth animation
 				const fraction = accumulatedTime / gpsDelta;
-				const interp = getInterpolatedPosition(
+				const interp = interpolatePosition(
 					positions[currentIndex],
 					positions[currentIndex + 1],
 					fraction
@@ -516,7 +479,7 @@
 
 	function getChartData(): { labels: string[]; data: number[]; label: string; color: string } {
 		const labels = positions.map((p) => {
-			const d = new Date(getTime(p));
+			const d = new Date(p.fixTime);
 			return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 		});
 
@@ -770,24 +733,7 @@
 						{/if}
 					</div>
 
-					<div class="filter-group">
-						<span class="filter-label">Date Range</span>
-						<div class="preset-buttons">
-							{#each RELATIVE_DATE_PRESETS as p (p.value)}
-								<button class="preset-btn" class:active={datePreset === p.value}
-									on:click={() => (datePreset = p.value)}>{p.label}</button>
-							{/each}
-						</div>
-					</div>
-
-					{#if datePreset === 'custom'}
-						<div class="filter-group date-inputs">
-							<label for="replay-from" class="filter-label">From</label>
-							<input id="replay-from" type="date" bind:value={customFrom} class="date-input" />
-							<label for="replay-to" class="filter-label">To</label>
-							<input id="replay-to" type="date" bind:value={customTo} class="date-input" />
-						</div>
-					{/if}
+					<DateRangeFilter bind:preset={datePreset} bind:from={customFrom} bind:to={customTo} idPrefix="replay" />
 
 					<Button on:click={handleLoad} loading={fetching}>Load Drive</Button>
 				</div>
@@ -806,7 +752,7 @@
 			<div bind:this={mapEl} class="replay-map"></div>
 
 			{#if fetching}
-				<div class="map-loading">
+				<div class="replay-loading">
 					<div class="spinner"></div>
 					<span>Loading positions...</span>
 				</div>
@@ -817,7 +763,7 @@
 				<div class="info-overlay">
 					<div class="info-row">
 						<span class="info-label">Time</span>
-						<span class="info-value">{formatDate(getTime(currentPosition))}</span>
+						<span class="info-value">{formatDate(currentPosition.fixTime)}</span>
 					</div>
 					<div class="info-row">
 						<span class="info-label">Speed</span>
@@ -977,7 +923,7 @@
 		{#if positions.length > 0}
 			<div class="playback-bar">
 				<div class="progress-row">
-					<span class="time-label">{currentPosition ? formatDate(getTime(currentPosition)) : '--'}</span>
+					<span class="time-label">{currentPosition ? formatDate(currentPosition.fixTime) : '--'}</span>
 					<input
 						type="range"
 						class="progress-slider"
@@ -1044,90 +990,14 @@
 		padding: var(--space-6) 0;
 	}
 
-	.container {
-		max-width: 1200px;
-		margin: 0 auto;
-		padding: 0 var(--space-4);
-	}
-
-
 	.page-subtitle {
 		color: var(--text-secondary);
 		font-size: var(--text-base);
 		margin: 0 0 var(--space-6);
 	}
 
-	.filters-bar {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: flex-end;
-		gap: var(--space-4);
-		padding: var(--space-4);
-		background-color: var(--bg-secondary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-lg);
-	}
-
-	.filter-group {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.filter-label {
-		font-size: var(--text-sm);
-		font-weight: var(--font-medium);
-		color: var(--text-secondary);
-	}
-
 	.select {
-		padding: var(--space-3) var(--space-4);
-		background-color: var(--bg-primary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
-		font-size: var(--text-base);
 		min-width: 200px;
-	}
-
-	.preset-buttons {
-		display: flex;
-		gap: var(--space-1);
-	}
-
-	.preset-btn {
-		padding: var(--space-2) var(--space-3);
-		background-color: var(--bg-primary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
-		font-size: var(--text-sm);
-		cursor: pointer;
-		transition: all var(--transition-fast);
-	}
-
-	.preset-btn:hover {
-		background-color: var(--bg-hover);
-	}
-
-	.preset-btn.active {
-		background-color: var(--accent-primary);
-		color: var(--text-inverse);
-		border-color: var(--accent-primary);
-	}
-
-	.date-inputs {
-		flex-direction: row;
-		align-items: center;
-	}
-
-	.date-input {
-		padding: var(--space-2) var(--space-3);
-		background-color: var(--bg-primary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
-		font-size: var(--text-sm);
 	}
 
 	.error-message {
@@ -1171,7 +1041,7 @@
 		background-color: var(--bg-tertiary);
 	}
 
-	.map-loading {
+	.replay-loading {
 		position: absolute;
 		top: 50%;
 		left: 50%;
@@ -1527,15 +1397,6 @@
 
 	/* Responsive */
 	@media (max-width: 768px) {
-		.filters-bar {
-			flex-direction: column;
-			align-items: stretch;
-		}
-
-		.filter-group {
-			width: 100%;
-		}
-
 		.select {
 			width: 100%;
 		}

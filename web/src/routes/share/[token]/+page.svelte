@@ -4,7 +4,9 @@
 	import { useLeaflet } from '$lib/composables/useLeaflet';
 	import { useUserLocation, userLocationLayers } from '$lib/composables/useUserLocation';
 	import { buildPopupElement } from '$lib/utils/popup';
-	import type { Device } from '$lib/types/api';
+	import type { Device, WebSocketMessage } from '$lib/types/api';
+	import { WebSocketManager } from '$lib/stores/websocket';
+	import { persisted } from '$lib/stores/persisted';
 	import { formatSpeed, getCardinalDirection } from '$lib/utils/formatting';
 	import { speedToKmh } from '$lib/api/client';
 
@@ -31,7 +33,6 @@
 	const userLocation = useUserLocation();
 	const userLayers = userLocationLayers(() => leafletMap.getLeaflet(), () => leafletMap.getMap(), false);
 
-
 	// State
 	let token = '';
 	let device: Device | null = null;
@@ -45,48 +46,25 @@
 	let trailPoints: Array<[number, number]> = [];
 	let mapContainer: HTMLDivElement;
 
-	// WebSocket state
-	let ws: WebSocket | null = null;
+	let socket: WebSocketManager | null = null;
+	let unsubscribers: Array<() => void> = [];
 	let wsConnected = false;
-	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	let pingInterval: ReturnType<typeof setInterval> | null = null;
 
 	// UI controls
-	let units: 'metric' | 'imperial' = 'metric';
+	const units = persisted<'metric' | 'imperial'>(SHARE_UNIT_KEY, 'metric', (v) => (v === 'imperial' ? v : null));
 	let autoCenter = true;
 	let showTrail = true;
 	let showInfo = true;
 
 	$: token = $page.params.token || '';
 	$: position = positions.length > 0 ? positions[0] : null;
-	$: formattedSpeed = position?.speed == null ? '--' : formatSpeed(position.speed, units);
+	$: formattedSpeed = position?.speed == null ? '--' : formatSpeed(position.speed, $units);
 	$: formattedCourse = position?.course != null ? `${Math.round(position.course)}` : '--';
 	$: courseDirection = position?.course != null ? getCardinalDirection(position.course) : '';
 	$: lastUpdateText = position ? formatTimeAgo(position.fixTime) : 'No data';
 
-	// Initialize unit preference from localStorage
-	function loadUnitPreference(): 'metric' | 'imperial' {
-		if (typeof window === 'undefined') return 'metric';
-		try {
-			const saved = localStorage.getItem(SHARE_UNIT_KEY);
-			if (saved === 'imperial') return 'imperial';
-		} catch {
-			// Ignore
-		}
-		return 'metric';
-	}
-
-	function saveUnitPreference(u: 'metric' | 'imperial') {
-		try {
-			localStorage.setItem(SHARE_UNIT_KEY, u);
-		} catch {
-			// Ignore
-		}
-	}
-
 	function toggleUnits() {
-		units = units === 'metric' ? 'imperial' : 'metric';
-		saveUnitPreference(units);
+		units.update((u) => (u === 'metric' ? 'imperial' : 'metric'));
 		// Update marker popup if present
 		if (marker && position) {
 			marker.getPopup()?.setContent(getPopupContent());
@@ -94,7 +72,7 @@
 	}
 
 	function formatSpeedText(speed: number | null | undefined): string {
-		return speed == null ? '--' : formatSpeed(speed, units);
+		return speed == null ? '--' : formatSpeed(speed, $units);
 	}
 
 	function formatTimeAgo(dateStr: string): string {
@@ -144,100 +122,33 @@
 
 	// --- WebSocket ---
 	function connectWebSocket() {
-		if (typeof window === 'undefined') return;
-		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-			return;
-		}
-
-		// Clean up existing socket
-		if (ws) {
-			ws.onopen = null;
-			ws.onmessage = null;
-			ws.onclose = null;
-			ws.onerror = null;
-			ws = null;
-		}
-
-		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-		const url = `${protocol}//${window.location.host}/api/socket?shareToken=${token}`;
-
-		const socket = new WebSocket(url);
-		ws = socket;
-
-		socket.onopen = () => {
-			if (ws !== socket) return;
-			wsConnected = true;
-
-			// Ping every 30s to keep connection alive
-			if (pingInterval) clearInterval(pingInterval);
-			pingInterval = setInterval(() => {
-				if (ws && ws.readyState === WebSocket.OPEN) {
-					ws.send(JSON.stringify({ type: 'ping' }));
-				}
-			}, 30000);
-		};
-
-		socket.onmessage = (event) => {
-			if (ws !== socket) return;
-			try {
-				const data = JSON.parse(event.data);
-				handleWebSocketMessage(data);
-			} catch {
-				// Ignore malformed messages
-			}
-		};
-
-		socket.onclose = () => {
-			if (ws !== socket) return;
-			wsConnected = false;
-			if (pingInterval) {
-				clearInterval(pingInterval);
-				pingInterval = null;
-			}
-			ws = null;
-			// Reconnect after 5 seconds
-			reconnectTimer = setTimeout(connectWebSocket, 5000);
-		};
-
-		socket.onerror = () => {
-			socket.close();
-		};
+		socket = new WebSocketManager(`?shareToken=${encodeURIComponent(token)}`);
+		unsubscribers = [
+			socket.connected.subscribe((v) => (wsConnected = v)),
+			socket.lastMessage.subscribe((msg) => msg && handleWebSocketMessage(msg)),
+		];
+		socket.connect();
 	}
 
 	function disconnectWebSocket() {
-		if (pingInterval) {
-			clearInterval(pingInterval);
-			pingInterval = null;
-		}
-		if (reconnectTimer) {
-			clearTimeout(reconnectTimer);
-			reconnectTimer = null;
-		}
-		if (ws) {
-			ws.onopen = null;
-			ws.onmessage = null;
-			ws.onclose = null;
-			ws.onerror = null;
-			ws.close();
-			ws = null;
-		}
-		wsConnected = false;
+		unsubscribers.forEach((unsubscribe) => unsubscribe());
+		socket?.disconnect();
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	function handleWebSocketMessage(data: any) {
+	function handleWebSocketMessage(data: WebSocketMessage) {
 		if (data.positions && Array.isArray(data.positions)) {
 			for (const pos of data.positions) {
-				const newPos: SharedPosition = speedToKmh({
+				// The socket manager already converted speed to km/h.
+				const newPos: SharedPosition = {
 					id: pos.id,
 					deviceId: pos.deviceId,
 					latitude: pos.latitude,
 					longitude: pos.longitude,
 					speed: pos.speed ?? null,
 					course: pos.course ?? null,
-					fixTime: pos.fixTime || pos.timestamp || new Date().toISOString(),
+					fixTime: pos.fixTime || new Date().toISOString(),
 					attributes: pos.attributes
-				});
+				};
 
 				// Update positions array (most recent first)
 				positions = [newPos];
@@ -413,31 +324,12 @@
 		}
 	}
 
-	// React to user position changes
-	$: if (userLocation.position) {
-		userLayers.updatePosition(userLocation.position);
-	}
-
-	// React to heading changes
-	$: if (userLocation.heading !== null || userLocation.position) {
-		userLayers.updateHeading(userLocation.position, userLocation.heading, userLocation.active);
-	}
-
-	async function toggleLocateMe() {
-		if (userLocation.active) {
-			userLocation.stop();
-			userLayers.remove();
-		} else {
-			await userLocation.start();
-		}
-	}
+	$: userLayers.sync($userLocation);
 
 	// --- Update timer for "last update" display ---
 	let updateTimer: ReturnType<typeof setInterval> | null = null;
 
 	onMount(async () => {
-		units = loadUnitPreference();
-
 		const ok = await fetchSharedDevice();
 		if (!ok) return;
 
@@ -527,7 +419,7 @@
 				<div class="info-block">
 					<div class="info-main-value">{formattedSpeed}</div>
 					<button class="unit-toggle" on:click={toggleUnits} title="Toggle units">
-						{units === 'metric' ? 'km/h' : 'mph'}
+						{$units === 'metric' ? 'km/h' : 'mph'}
 					</button>
 				</div>
 
@@ -595,10 +487,10 @@
 			</button>
 			<button
 				class="control-btn"
-				class:active={userLocation.active}
-				on:click={toggleLocateMe}
-				title={userLocation.active ? 'Hide my location' : 'Show my location'}
-				aria-label={userLocation.active ? 'Hide my location' : 'Show my location'}
+				class:active={$userLocation.active}
+				on:click={() => userLayers.toggle(userLocation)}
+				title={$userLocation.active ? 'Hide my location' : 'Show my location'}
+				aria-label={$userLocation.active ? 'Hide my location' : 'Show my location'}
 			>
 				<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
 					<circle cx="12" cy="12" r="3"/>
@@ -608,9 +500,9 @@
 			</button>
 		</div>
 
-		{#if userLocation.error}
+		{#if $userLocation.error}
 			<div class="locate-error" role="alert">
-				{userLocation.error}
+				{$userLocation.error}
 			</div>
 		{/if}
 
@@ -645,7 +537,6 @@
 		padding: 2rem;
 		text-align: center;
 	}
-
 
 	.loading-screen p,
 	.error-screen p {
@@ -682,27 +573,10 @@
 		z-index: 0;
 	}
 
-	.map-container :global(.leaflet-container) {
-		height: 100%;
-		width: 100%;
-	}
-
 	/* Hide default marker styling */
 	.map-container :global(.share-marker) {
 		background: none !important;
 		border: none !important;
-	}
-
-	/* Leaflet popup theming */
-	.map-container :global(.leaflet-popup-content-wrapper) {
-		background-color: var(--bg-secondary, #2d2d2d);
-		color: var(--text-primary, #e0e0e0);
-		border-radius: 8px;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-	}
-
-	.map-container :global(.leaflet-popup-tip) {
-		background-color: var(--bg-secondary, #2d2d2d);
 	}
 
 	/* Connection indicator */
@@ -721,28 +595,6 @@
 		border-radius: 20px;
 		font-size: 0.75rem;
 		color: #a0a0a0;
-	}
-
-	.ws-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background-color: #ff4444;
-		flex-shrink: 0;
-	}
-
-	.ws-indicator.connected .ws-dot {
-		background-color: #00ff88;
-		animation: pulse-dot 2s ease-in-out infinite;
-	}
-
-	.ws-indicator.connected .ws-label {
-		color: #00ff88;
-	}
-
-	@keyframes pulse-dot {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.5; }
 	}
 
 	/* Header overlay */
@@ -953,49 +805,6 @@
 		border-radius: 8px;
 		font-size: 0.6875rem;
 		color: #ff6666;
-	}
-
-	/* User location dot */
-	.map-container :global(.user-location-marker) {
-		background: none !important;
-		border: none !important;
-	}
-
-	.map-container :global(.user-heading-marker) {
-		background: none !important;
-		border: none !important;
-	}
-
-	.map-container :global(.user-location-dot) {
-		position: relative;
-		width: 16px;
-		height: 16px;
-	}
-
-	.map-container :global(.user-location-dot::before) {
-		content: '';
-		position: absolute;
-		inset: 0;
-		border-radius: 50%;
-		background: #4285F4;
-		opacity: 0.4;
-		animation: user-location-pulse 1.8s ease-out infinite;
-	}
-
-	.map-container :global(.user-location-dot-inner) {
-		width: 16px;
-		height: 16px;
-		background: #4285F4;
-		border: 2.5px solid white;
-		border-radius: 50%;
-		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-		position: relative;
-		z-index: 1;
-	}
-
-	@keyframes user-location-pulse {
-		0% { transform: scale(1); opacity: 0.4; }
-		100% { transform: scale(2.5); opacity: 0; }
 	}
 
 	/* No data overlay */

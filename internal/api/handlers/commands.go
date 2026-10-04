@@ -40,18 +40,6 @@ func validateCommandAttrs(cmdType string, attrs map[string]any) error {
 	return nil
 }
 
-// --- ogen Handler methods ---
-
-// oasCommandInputToModel converts an oas.CommandInput to a model.Command.
-func oasCommandInputToModel(req *oas.CommandInput) *model.Command {
-	return &model.Command{
-		DeviceID:   req.DeviceId,
-		Type:       req.Type,
-		Attributes: oasCommandAttrsToModel(req.Attributes),
-		Status:     model.CommandStatusPending,
-	}
-}
-
 // CreateCommand implements oas.Handler for POST /api/commands.
 // Queues a command for later delivery to the device.
 func (h *Handler) CreateCommand(ctx context.Context, req *oas.CommandInput) (oas.CreateCommandRes, error) {
@@ -69,7 +57,12 @@ func (h *Handler) CreateCommand(ctx context.Context, req *oas.CommandInput) (oas
 		return &oas.CreateCommandBadRequest{Error: "access denied"}, nil
 	}
 
-	cmd := oasCommandInputToModel(req)
+	cmd := &model.Command{
+		DeviceID:   req.DeviceId,
+		Type:       req.Type,
+		Attributes: oasCommandAttrsToModel(req.Attributes),
+		Status:     model.CommandStatusPending,
+	}
 	if err := h.cfg.Commands.Create(ctx, cmd); err != nil {
 		return &oas.CreateCommandBadRequest{Error: "failed to create command"}, nil
 	}
@@ -98,11 +91,7 @@ func (h *Handler) ListCommands(ctx context.Context, params oas.ListCommandsParam
 	if err != nil {
 		return &oas.Error{Error: "failed to list commands"}, nil
 	}
-	result := make(oas.ListCommandsOKApplicationJSON, len(commands))
-	for i, c := range commands {
-		result[i] = commandToOAS(c)
-	}
-	return &result, nil
+	return new(mapSlice[oas.ListCommandsOKApplicationJSON](commands, commandToOAS)), nil
 }
 
 // GetCommandTypes implements oas.Handler for GET /api/commands/types.

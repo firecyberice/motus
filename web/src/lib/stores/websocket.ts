@@ -5,7 +5,7 @@ import { speedToKmh } from "$lib/api/client";
 /** Maximum length of raw message content included in warning logs. */
 const LOG_TRUNCATE_LENGTH = 200;
 
-class WebSocketManager {
+export class WebSocketManager {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -13,10 +13,11 @@ class WebSocketManager {
   public connected = writable(false);
   public lastMessage = writable<WebSocketMessage | null>(null);
 
+  /** @param query appended to /api/socket, e.g. "?shareToken=..." */
+  constructor(private query = "") {}
+
   private startPingInterval() {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-    }
+    this.stopPingInterval();
     this.pingInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: "ping" }));
@@ -51,9 +52,6 @@ class WebSocketManager {
       (this.ws.readyState === WebSocket.OPEN ||
         this.ws.readyState === WebSocket.CONNECTING)
     ) {
-      if (import.meta.env.DEV) {
-        console.log("[WS] Already connected or connecting, skipping");
-      }
       return;
     }
 
@@ -61,11 +59,7 @@ class WebSocketManager {
     this.detach();
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/api/socket`;
-
-    if (import.meta.env.DEV) {
-      console.log("[WS] Connecting to:", url);
-    }
+    const url = `${protocol}//${window.location.host}/api/socket${this.query}`;
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -73,9 +67,6 @@ class WebSocketManager {
       // Only update state if this is still the active socket
       if (this.ws !== ws) return;
       this.connected.set(true);
-      if (import.meta.env.DEV) {
-        console.log("[WS] Connected successfully");
-      }
 
       // Send ping every 30 seconds to keep connection alive
       this.startPingInterval();
@@ -103,19 +94,11 @@ class WebSocketManager {
       }
     };
 
-    ws.onclose = (event) => {
+    ws.onclose = () => {
       // Only update state and reconnect if this is still the active socket
       if (this.ws !== ws) return;
       this.connected.set(false);
       this.stopPingInterval();
-      if (import.meta.env.DEV) {
-        console.log(
-          "[WS] Disconnected, code:",
-          event.code,
-          "reason:",
-          event.reason,
-        );
-      }
       this.ws = null;
       this.reconnectTimer = setTimeout(() => this.connect(), 5000);
     };

@@ -105,24 +105,7 @@
 
 	$: if (selectedDeviceId !== bookmarksDeviceId) void loadDeviceBookmarks(selectedDeviceId);
 
-	// React to user position changes
-	$: if (userLocation.position) {
-		userLayers.updatePosition(userLocation.position);
-	}
-
-	// React to heading changes
-	$: if (userLocation.heading !== null || userLocation.position) {
-		userLayers.updateHeading(userLocation.position, userLocation.heading, userLocation.active);
-	}
-
-	async function toggleLocateMe() {
-		if (userLocation.active) {
-			userLocation.stop();
-			userLayers.remove();
-		} else {
-			await userLocation.start();
-		}
-	}
+	$: userLayers.sync($userLocation);
 
 	onMount(async () => {
 		// Subscribe to WebSocket connection state IMMEDIATELY (before any async work)
@@ -713,7 +696,7 @@
 								<div class="device-top">
 									<span class="device-name">{device.name}</span>
 									{#if device.ownerName}
-										<span class="owner-badge" title="Owned by {device.ownerName}">{device.ownerName}</span>
+										<span class="owner-badge owner-badge-sm" title="Owned by {device.ownerName}">{device.ownerName}</span>
 									{/if}
 									<span class="device-indicators">
 										<BatteryIndicator level={device.batteryLevel} />
@@ -851,10 +834,10 @@
 		<!-- Locate Me button -->
 		<button
 			class="locate-me-btn"
-			class:active={userLocation.active}
-			on:click={toggleLocateMe}
-			title={userLocation.active ? 'Stop locating me' : 'Show my location'}
-			aria-label={userLocation.active ? 'Stop locating me' : 'Show my location'}
+			class:active={$userLocation.active}
+			on:click={() => userLayers.toggle(userLocation)}
+			title={$userLocation.active ? 'Stop locating me' : 'Show my location'}
+			aria-label={$userLocation.active ? 'Stop locating me' : 'Show my location'}
 		>
 			<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
 				<circle cx="12" cy="12" r="3"/>
@@ -863,9 +846,9 @@
 			</svg>
 		</button>
 
-		{#if userLocation.error}
+		{#if $userLocation.error}
 			<div class="locate-error" role="alert">
-				{userLocation.error}
+				{$userLocation.error}
 			</div>
 		{/if}
 	</div>
@@ -1067,28 +1050,6 @@
 		color: var(--text-tertiary);
 	}
 
-	.map-container {
-		flex: 1;
-		position: relative;
-	}
-
-	.map-container :global(.leaflet-container) {
-		height: 100%;
-		width: 100%;
-		background-color: var(--bg-tertiary);
-	}
-
-	.map-loading {
-		position: absolute;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background-color: var(--bg-primary);
-		z-index: 500;
-	}
-
-
 	/* WebSocket connection indicator */
 	.ws-indicator {
 		position: absolute;
@@ -1107,57 +1068,11 @@
 		box-shadow: var(--shadow-md);
 	}
 
-	.ws-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background-color: #ff4444;
-		flex-shrink: 0;
-	}
-
-	.ws-indicator.connected .ws-dot {
-		background-color: #00ff88;
-		animation: pulse-dot 2s ease-in-out infinite;
-	}
-
-	.ws-indicator.connected .ws-label {
-		color: #00ff88;
-	}
-
-	@keyframes pulse-dot {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.5; }
-	}
-
 	/* Locate Me button — sits below the ws-indicator pill (~28px) */
 	.locate-me-btn {
 		position: absolute;
 		top: calc(var(--space-3) + 28px + var(--space-2));
 		left: var(--space-3);
-		z-index: 500;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		background-color: var(--bg-secondary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-full);
-		color: var(--text-secondary);
-		cursor: pointer;
-		box-shadow: var(--shadow-md);
-		transition: all var(--transition-fast);
-	}
-
-	.locate-me-btn:hover {
-		color: var(--text-primary);
-		border-color: var(--accent-primary);
-	}
-
-	.locate-me-btn.active {
-		color: #4285F4;
-		border-color: #4285F4;
-		background-color: rgba(66, 133, 244, 0.1);
 	}
 
 	.locate-error {
@@ -1172,61 +1087,6 @@
 		border-radius: var(--radius-md);
 		font-size: var(--text-xs);
 		color: var(--error);
-	}
-
-	/* User location dot (injected into Leaflet as divIcon) */
-	.map-container :global(.user-location-marker) {
-		background: none !important;
-		border: none !important;
-	}
-
-	.map-container :global(.user-heading-marker) {
-		background: none !important;
-		border: none !important;
-	}
-
-	.map-container :global(.user-location-dot) {
-		position: relative;
-		width: 16px;
-		height: 16px;
-	}
-
-	.map-container :global(.user-location-dot::before) {
-		content: '';
-		position: absolute;
-		inset: 0;
-		border-radius: 50%;
-		background: #4285F4;
-		opacity: 0.4;
-		animation: user-location-pulse 1.8s ease-out infinite;
-	}
-
-	.map-container :global(.user-location-dot-inner) {
-		width: 16px;
-		height: 16px;
-		background: #4285F4;
-		border: 2.5px solid white;
-		border-radius: 50%;
-		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-		position: relative;
-		z-index: 1;
-	}
-
-	@keyframes user-location-pulse {
-		0% { transform: scale(1); opacity: 0.4; }
-		100% { transform: scale(2.5); opacity: 0; }
-	}
-
-	/* Leaflet popup override */
-	.map-container :global(.leaflet-popup-content-wrapper) {
-		background-color: var(--bg-secondary);
-		color: var(--text-primary);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow-lg);
-	}
-
-	.map-container :global(.leaflet-popup-tip) {
-		background-color: var(--bg-secondary);
 	}
 
 	@media (max-width: 768px) {
@@ -1250,16 +1110,5 @@
 	.device-item.other-user {
 		border-left: 3px solid var(--color-warning, #f59e0b);
 		background: color-mix(in srgb, var(--color-warning, #f59e0b) 4%, transparent);
-	}
-
-	.owner-badge {
-		display: inline-block;
-		font-size: 0.6rem;
-		padding: 0.05rem 0.3rem;
-		border-radius: 0.2rem;
-		background: color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent);
-		color: var(--text-secondary, #666);
-		line-height: 1.2;
-		white-space: nowrap;
 	}
 </style>

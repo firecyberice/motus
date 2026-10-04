@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 	"github.com/tamcore/motus/internal/geocoding"
+	"github.com/tamcore/motus/internal/model"
 )
 
 // Config holds all CLI flags.
@@ -1011,7 +1012,7 @@ func importPositions(ctx context.Context, pool *pgxpool.Pool, positions []Tracca
 				INSERT INTO positions (device_id, latitude, longitude, altitude, speed, course, timestamp, device_time, server_time)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			`, motusDeviceID, p.Latitude, p.Longitude, p.Altitude,
-				knotsToKmh(p.Speed), p.Course, p.FixTime, p.DeviceTime, p.ServerTime)
+				model.KnotsToKmh(p.Speed), p.Course, p.FixTime, p.DeviceTime, p.ServerTime)
 
 			if err != nil {
 				if config.Verbose {
@@ -1173,16 +1174,12 @@ func importGeofences(ctx context.Context, pool *pgxpool.Pool, geofences []Tracca
 				RETURNING id
 			`, g.Name, g.Description, lon, lat, radius).Scan(&geofenceID)
 		} else {
-			// POLYGON or other WKT: swap coordinates from Traccar's lat,lon to PostGIS's lon,lat.
-			swapped := swapWKTCoordinates(g.Area)
-			if config.Verbose {
-				slog.Debug("swapped WKT coordinates", slog.String("wktPreview", swapped[:min(80, len(swapped))]))
-			}
+			// Traccar stores WKT as lat,lon; PostGIS expects lon,lat.
 			err = pool.QueryRow(ctx, `
 				INSERT INTO geofences (name, description, geometry, created_at, updated_at)
-				VALUES ($1, $2, ST_GeomFromText($3, 4326), NOW(), NOW())
+				VALUES ($1, $2, ST_FlipCoordinates(ST_GeomFromText($3, 4326)), NOW(), NOW())
 				RETURNING id
-			`, g.Name, g.Description, swapped).Scan(&geofenceID)
+			`, g.Name, g.Description, g.Area).Scan(&geofenceID)
 		}
 
 		if err != nil {
@@ -1432,62 +1429,6 @@ func parseTraccarCircle(wkt string) (lat, lon, radius float64, err error) {
 	return lat, lon, radius, nil
 }
 
-// swapWKTCoordinates swaps coordinate pairs in a WKT string from lat,lon to lon,lat order.
-// Traccar stores WKT as POLYGON((lat lon, lat lon, ...)) but PostGIS expects
-// POLYGON((lon lat, lon lat, ...)).
-func swapWKTCoordinates(wkt string) string {
-	// Find the coordinate data between the outermost parentheses.
-	// We need to handle nested parens for POLYGON((...)), MULTIPOLYGON(((...)))
-	firstParen := strings.Index(wkt, "(")
-	if firstParen < 0 {
-		return wkt
-	}
-
-	prefix := wkt[:firstParen]
-	rest := wkt[firstParen:]
-
-	// Process coordinate pairs within the parenthesized section.
-	// We strip all parens, split by comma, swap each pair, then reconstruct.
-	var result strings.Builder
-	result.WriteString(prefix)
-
-	i := 0
-	for i < len(rest) {
-		ch := rest[i]
-		if ch == '(' || ch == ')' || ch == ',' {
-			result.WriteByte(ch)
-			i++
-			continue
-		}
-		if ch == ' ' && (i == 0 || rest[i-1] == '(' || rest[i-1] == ',') {
-			// Leading whitespace after delimiter
-			result.WriteByte(ch)
-			i++
-			continue
-		}
-
-		// Read a coordinate pair: "lat lon" (two numbers separated by space)
-		j := i
-		for j < len(rest) && rest[j] != ',' && rest[j] != ')' {
-			j++
-		}
-		pair := strings.TrimSpace(rest[i:j])
-		parts := strings.Fields(pair)
-		if len(parts) == 2 {
-			// Swap: lat lon -> lon lat
-			result.WriteString(parts[1])
-			result.WriteByte(' ')
-			result.WriteString(parts[0])
-		} else {
-			// Not a coordinate pair, write as-is
-			result.WriteString(pair)
-		}
-		i = j
-	}
-
-	return result.String()
-}
-
 // nullStr converts PostgreSQL COPY \N (null) to empty string.
 func nullStr(s string) string {
 	if s == `\N` {
@@ -1523,11 +1464,6 @@ func parseTimestamp(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognized timestamp format: %q", s)
-}
-
-// knotsToKmh converts speed from knots (Traccar) to km/h (Motus).
-func knotsToKmh(knots float64) float64 {
-	return knots * 1.852
 }
 
 // geocodeRecentPositions reverse-geocodes recently imported positions that don't have addresses.

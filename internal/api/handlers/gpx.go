@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
-	"math"
 
 	"github.com/tamcore/motus/internal/api"
 	oas "github.com/tamcore/motus/internal/api/oas"
@@ -53,7 +52,7 @@ func (h *Handler) ImportGPX(ctx context.Context, req oas.ImportGPXReq, params oa
 		return &oas.ImportGPXBadRequest{Error: "invalid GPX file"}, nil
 	}
 
-	imported, _, lastPos := processGPXPoints(ctx, h.cfg.Positions, params.ID, &gpxFile)
+	imported, lastPos := processGPXPoints(ctx, h.cfg.Positions, params.ID, &gpxFile)
 	if imported == 0 {
 		return &oas.ImportGPXBadRequest{Error: "no timed positions found in GPX file"}, nil
 	}
@@ -79,11 +78,11 @@ func (h *Handler) ImportGPX(ctx context.Context, req oas.ImportGPXReq, params oa
 }
 
 // processGPXPoints iterates all GPX trackpoints, inserts timed ones as
-// positions, and returns the imported count, skipped count, and the last
+// positions, and returns the imported count and the last
 // inserted position. Speed is stored in km/h (internal unit) and calculated
 // from haversine distance divided by elapsed time between consecutive timed
 // points.
-func processGPXPoints(ctx context.Context, positions repository.PositionRepo, deviceID int64, gpxFile *demo.GPXFile) (imported, skipped int, lastPos *model.Position) {
+func processGPXPoints(ctx context.Context, positions repository.PositionRepo, deviceID int64, gpxFile *demo.GPXFile) (imported int, lastPos *model.Position) {
 	var prevLat, prevLon float64
 	var prevUnix int64
 
@@ -91,7 +90,6 @@ func processGPXPoints(ctx context.Context, positions repository.PositionRepo, de
 		for _, seg := range track.Segments {
 			for _, pt := range seg.Points {
 				if pt.Time.IsZero() {
-					skipped++
 					continue
 				}
 
@@ -102,7 +100,7 @@ func processGPXPoints(ctx context.Context, positions repository.PositionRepo, de
 						distM := geo.HaversineDistance(prevLat, prevLon, pt.Lat, pt.Lon) * 1000
 						spd = (distM / float64(dt)) * 3.6 // m/s → km/h
 					}
-					crs = gpxBearing(prevLat, prevLon, pt.Lat, pt.Lon)
+					crs = geo.Bearing(prevLat, prevLon, pt.Lat, pt.Lon)
 				}
 
 				alt := pt.Ele
@@ -120,7 +118,6 @@ func processGPXPoints(ctx context.Context, positions repository.PositionRepo, de
 				}
 
 				if err := positions.Create(ctx, pos); err != nil {
-					skipped++
 					continue
 				}
 
@@ -133,14 +130,4 @@ func processGPXPoints(ctx context.Context, positions repository.PositionRepo, de
 		}
 	}
 	return
-}
-
-// gpxBearing returns the initial bearing from (lat1,lon1) to (lat2,lon2) in degrees [0,360).
-func gpxBearing(lat1, lon1, lat2, lon2 float64) float64 {
-	dLon := (lon2 - lon1) * math.Pi / 180.0
-	lat1R := lat1 * math.Pi / 180.0
-	lat2R := lat2 * math.Pi / 180.0
-	y := math.Sin(dLon) * math.Cos(lat2R)
-	x := math.Cos(lat1R)*math.Sin(lat2R) - math.Sin(lat1R)*math.Cos(lat2R)*math.Cos(dLon)
-	return math.Mod(math.Atan2(y, x)*180.0/math.Pi+360, 360)
 }

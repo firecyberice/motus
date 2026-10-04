@@ -13,6 +13,10 @@ export class GeofencesPage {
     await this.page.waitForTimeout(500);
   }
 
+  get locateButton() {
+    return this.page.locator('.locate-me-btn');
+  }
+
   get sidebarTitle() {
     return this.page.locator('.sidebar-title');
   }
@@ -55,14 +59,6 @@ export class GeofencesPage {
 
   get cancelButton() {
     return this.page.locator('[role="dialog"] button:has-text("Cancel")');
-  }
-
-  getFenceDeleteButton(index: number) {
-    return this.fenceItems.nth(index).locator('.fence-delete');
-  }
-
-  getFenceInfo(index: number) {
-    return this.fenceItems.nth(index).locator('.fence-info');
   }
 
   async expectLoaded() {

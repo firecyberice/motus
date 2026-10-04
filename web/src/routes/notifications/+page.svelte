@@ -7,13 +7,7 @@
 	import Input from '$lib/components/Input.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import AllDevicesToggle from '$lib/components/AllDevicesToggle.svelte';
-	import ReportingIntervalPicker from '$lib/components/ReportingIntervalPicker.svelte';
-	import {
-		EVENT_TYPES,
-		CHANNELS,
-		TEMPLATE_VARIABLES,
-		DEFAULT_TEMPLATE
-	} from '$lib/stores/notifications';
+	import CommandParamFields from '$lib/components/CommandParamFields.svelte';
 	import type {
 		Geofence,
 		NotificationRule,
@@ -23,6 +17,10 @@
 	} from '$lib/types/api';
 	import { COMMAND_TYPE_LABELS, DEFAULT_REPORTING_INTERVAL_SECONDS } from '$lib/utils/commands';
 	import {
+		EVENT_TYPES,
+		CHANNELS,
+		TEMPLATE_VARIABLES,
+		DEFAULT_TEMPLATE,
 		NOTIFICATION_COMMAND_TYPES,
 		buildCommandConfig,
 		commandEventConflict,
@@ -307,7 +305,7 @@
 
 <div class="notifications-page">
 	<div class="container">
-		<div class="page-header">
+		<div class="page-header page-header-stack">
 			<h1 class="page-title">Notification Rules</h1>
 			<div class="header-actions">
 				<AllDevicesToggle on:change={refresh} />
@@ -530,15 +528,13 @@
 				{/if}
 			</div>
 
-			{#if formCommandType === 'positionPeriodic'}
-				<ReportingIntervalPicker bind:value={formFrequency} />
-			{:else if formCommandType === 'sosNumber'}
-				<Input name="sosNumber" label="SOS Phone Number" placeholder="+1234567890" bind:value={formSosNumber} />
-			{:else if formCommandType === 'setSpeedAlarm'}
-				<Input name="speed" label="Speed Limit (km/h, 0 = disable)" placeholder="80" bind:value={formSpeed} />
-			{:else if formCommandType === 'custom'}
-				<Input name="text" label="Raw Command" placeholder="rconf" bind:value={formText} />
-			{/if}
+			<CommandParamFields
+				type={formCommandType}
+				bind:frequency={formFrequency}
+				bind:sosNumber={formSosNumber}
+				bind:speed={formSpeed}
+				bind:text={formText}
+			/>
 		{:else}
 			<Input
 				label="Webhook URL"
@@ -596,17 +592,6 @@
 	.notifications-page {
 		padding: var(--space-6) 0;
 	}
-	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: var(--space-6);
-	}
-	.header-actions {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-	}
 	.history-link,
 	.logs-link {
 		display: inline-flex;
@@ -630,28 +615,6 @@
 		color: var(--accent-primary);
 		border-color: var(--accent-primary);
 		background-color: var(--bg-hover);
-	}
-
-	/* Error banner */
-	.dismiss-btn {
-		background: none;
-		border: none;
-		color: var(--error);
-		cursor: pointer;
-		font-weight: var(--font-bold);
-		padding: var(--space-1) var(--space-2);
-	}
-
-	/* Loading */
-	.loading-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		padding: var(--space-16) var(--space-4);
-		gap: var(--space-4);
-	}
-	.loading-state p {
-		color: var(--text-secondary);
 	}
 	/* Empty */
 
@@ -708,14 +671,6 @@
 		border-radius: var(--radius-sm);
 		font-size: var(--text-xs);
 		font-weight: var(--font-medium);
-	}
-	.channel-webhook {
-		background-color: rgba(0, 212, 255, 0.15);
-		color: var(--accent-primary);
-	}
-	.channel-command {
-		background-color: color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent);
-		color: var(--color-warning, #f59e0b);
 	}
 
 	/* Toggle */
@@ -800,21 +755,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
-	}
-	.form-group {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-	.form-label {
-		font-size: var(--text-sm);
-		font-weight: var(--font-medium);
-		color: var(--text-primary);
-	}
-	.select:focus {
-		outline: none;
-		border-color: var(--accent-primary);
-		box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
 	}
 
 	.form-label-row {
@@ -961,16 +901,5 @@
 	.rule-card.other-user {
 		border-left: 3px solid var(--color-warning, #f59e0b);
 		background: color-mix(in srgb, var(--color-warning, #f59e0b) 4%, transparent);
-	}
-
-	.owner-badge {
-		display: inline-block;
-		font-size: 0.65rem;
-		padding: 0.1rem 0.35rem;
-		border-radius: 0.25rem;
-		background: color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent);
-		color: var(--text-secondary, #666);
-		line-height: 1.2;
-		white-space: nowrap;
 	}
 </style>

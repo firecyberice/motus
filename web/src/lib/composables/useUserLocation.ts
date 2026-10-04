@@ -1,23 +1,4 @@
-/**
- * Composable for tracking the user's own position on the map.
- *
- * Manages:
- *  - Geolocation watch (navigator.geolocation.watchPosition) for live lat/lng/accuracy
- *  - Compass heading via deviceorientationabsolute (Chrome/Android) or
- *    webkitCompassHeading (iOS Safari); handles iOS 13+ permission request
- *
- * Usage:
- *   const userLocation = useUserLocation();
- *   // Call start() from a user gesture (required for iOS compass permission):
- *   await userLocation.start();
- *   // Access reactive state:
- *   userLocation.active   // boolean
- *   userLocation.position // { lat, lng, accuracy } | null
- *   userLocation.heading  // degrees from true north | null
- *   userLocation.error    // error message | null
- *   // Stop tracking:
- *   userLocation.stop();
- */
+import { get, writable, type Readable } from "svelte/store";
 
 export interface UserPosition {
   lat: number;
@@ -25,34 +6,25 @@ export interface UserPosition {
   accuracy: number;
 }
 
-export interface UseUserLocationReturn {
-  /** Whether location tracking is currently active. */
+export interface UserLocationState {
   active: boolean;
-  /** Current user position, or null if not yet acquired. */
   position: UserPosition | null;
-  /** Compass heading in degrees from true north (0–360), or null if unavailable. */
+  /** Degrees from true north, or null if unavailable. */
   heading: number | null;
-  /** Human-readable error message, or null if no error. */
   error: string | null;
-  /**
-   * Start geolocation tracking and compass heading.
-   * Must be called from a user gesture (required for iOS compass permission).
-   * Returns a promise that resolves once the watch is started (first fix may come later).
-   */
+}
+
+export interface UseUserLocationReturn extends Readable<UserLocationState> {
+  /** Call from a user gesture (iOS compass permission); the first fix may come later. */
   start: () => Promise<void>;
-  /** Stop tracking and clean up all watchers/listeners. */
   stop: () => void;
 }
 
+const IDLE: UserLocationState = { active: false, position: null, heading: null, error: null };
+
 export function useUserLocation(): UseUserLocationReturn {
-  const state: UseUserLocationReturn = {
-    active: false,
-    position: null,
-    heading: null,
-    error: null,
-    start,
-    stop,
-  };
+  const store = writable<UserLocationState>(IDLE);
+  const patch = (p: Partial<UserLocationState>) => store.update((s) => ({ ...s, ...p }));
 
   let watchId: number | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,27 +32,25 @@ export function useUserLocation(): UseUserLocationReturn {
   let orientationEventName: string | null = null;
 
   async function start(): Promise<void> {
-    if (state.active) return;
+    if (get(store).active) return;
 
-    state.error = null;
+    patch({ error: null });
 
     if (!navigator.geolocation) {
-      state.error = 'Geolocation is not supported by your browser.';
+      patch({ error: 'Geolocation is not supported by your browser.' });
       return;
     }
 
     // Start geolocation watch
     watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        state.position = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        };
-        state.error = null;
+        patch({
+          position: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy },
+          error: null,
+        });
       },
       (err) => {
-        state.error = geolocationErrorMessage(err);
+        patch({ error: geolocationErrorMessage(err) });
       },
       {
         enableHighAccuracy: true,
@@ -89,7 +59,7 @@ export function useUserLocation(): UseUserLocationReturn {
       }
     );
 
-    state.active = true;
+    patch({ active: true });
 
     // Start compass heading (best effort — failures don't prevent location dot)
     await startCompass();
@@ -107,15 +77,10 @@ export function useUserLocation(): UseUserLocationReturn {
       orientationEventName = null;
     }
 
-    state.active = false;
-    state.position = null;
-    state.heading = null;
-    state.error = null;
+    store.set(IDLE);
   }
 
   async function startCompass(): Promise<void> {
-    if (typeof window === 'undefined') return;
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const DevOrEvent = (window as any).DeviceOrientationEvent;
 
@@ -137,14 +102,14 @@ export function useUserLocation(): UseUserLocationReturn {
     const handler = (e: any) => {
       if (e.webkitCompassHeading != null) {
         // iOS Safari: webkitCompassHeading is degrees from magnetic north (0 = North)
-        state.heading = e.webkitCompassHeading;
+        patch({ heading: e.webkitCompassHeading });
       } else if (e.absolute && e.alpha != null) {
         // Chrome/Android: deviceorientationabsolute gives true heading
         // alpha = rotation around z-axis, 0 = North when absolute = true
         // Must negate and normalize to get compass bearing
-        state.heading = (360 - e.alpha) % 360;
+        patch({ heading: (360 - e.alpha) % 360 });
       } else {
-        state.heading = null;
+        patch({ heading: null });
       }
     };
 
@@ -159,12 +124,8 @@ export function useUserLocation(): UseUserLocationReturn {
     window.addEventListener(orientationEventName, handler);
   }
 
-  return state;
+  return { subscribe: store.subscribe, start, stop };
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
 
 function geolocationErrorMessage(err: GeolocationPositionError): string {
   switch (err.code) {
@@ -179,17 +140,14 @@ function geolocationErrorMessage(err: GeolocationPositionError): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Map layers for the user's position (accuracy circle, dot, compass cone)
-// ---------------------------------------------------------------------------
+// Map layers for the user's position: accuracy circle, dot, compass cone.
 
 type Leaflet = typeof import("leaflet");
 type LeafletMap = import("leaflet").Map;
 
 export interface UserLocationLayers {
-  updatePosition: (pos: UserPosition | null) => void;
-  updateHeading: (pos: UserPosition | null, heading: number | null, active: boolean) => void;
-  remove: () => void;
+  sync: (location: UserLocationState) => void;
+  toggle: (location: UseUserLocationReturn) => Promise<void>;
 }
 
 export function userLocationLayers(
@@ -279,5 +237,19 @@ export function userLocationLayers(
     accuracyCircle = dotMarker = headingMarker = null;
   }
 
-  return { updatePosition, updateHeading, remove };
+  function sync(location: UserLocationState): void {
+    updatePosition(location.position);
+    updateHeading(location.position, location.heading, location.active);
+  }
+
+  async function toggle(location: UseUserLocationReturn): Promise<void> {
+    if (get(location).active) {
+      location.stop();
+      remove();
+    } else {
+      await location.start();
+    }
+  }
+
+  return { sync, toggle };
 }

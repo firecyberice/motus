@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -32,10 +33,6 @@ const (
 	defaultPasskeyName = "Passkey"
 )
 
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
-
 // PasskeyRegisterBegin starts a passkey registration for the authenticated user.
 func (h *Handler) PasskeyRegisterBegin(ctx context.Context) (oas.PasskeyRegisterBeginRes, error) {
 	if h.cfg.WebAuthn == nil {
@@ -51,14 +48,8 @@ func (h *Handler) PasskeyRegisterBegin(ctx context.Context) (oas.PasskeyRegister
 		return &oas.PasskeyRegisterBeginUnauthorized{Error: "failed to load user"}, nil
 	}
 
-	exclusions := make([]protocol.CredentialDescriptor, 0, len(wu.creds))
-	for _, c := range wu.creds {
-		wc := toWebauthnCredential(c)
-		exclusions = append(exclusions, wc.Descriptor())
-	}
-
 	creation, sessionData, err := h.cfg.WebAuthn.BeginRegistration(wu,
-		webauthn.WithExclusions(exclusions),
+		webauthn.WithExclusions(webauthn.Credentials(wu.WebAuthnCredentials()).CredentialDescriptors()),
 		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 	)
 	if err != nil {
@@ -122,12 +113,8 @@ func (h *Handler) PasskeyRegisterFinish(ctx context.Context, req oas.WebAuthnAtt
 	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionUserUpdate, audit.ResourceUser, &user.ID,
 		map[string]any{"passkeyRegistered": name}, "", "")
 
-	return passkeyToOAS(mc), nil
+	return new(passkeyToOAS(mc)), nil
 }
-
-// ---------------------------------------------------------------------------
-// Login (public, discoverable / usernameless)
-// ---------------------------------------------------------------------------
 
 // PasskeyLoginBegin starts a discoverable passkey login. No user identifier is
 // required; the authenticator selects the resident credential.
@@ -225,23 +212,11 @@ func (h *Handler) PasskeyLoginFinish(ctx context.Context, req oas.WebAuthnAssert
 		return &oas.PasskeyLoginFinishUnauthorized{Error: err.Error()}, nil
 	}
 
-	if w := api.ResponseWriterFromContext(ctx); w != nil {
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session_id",
-			Value:    session.ID,
-			Path:     "/",
-			Expires:  session.ExpiresAt,
-			MaxAge:   int(time.Until(session.ExpiresAt).Seconds()),
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			Secure:   isSecureEnvironment(),
-		})
-	}
+	setSessionCookie(ctx, session.ID, session.ExpiresAt)
 
 	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLogin, audit.ResourceSession, nil,
 		map[string]any{"method": "passkey"}, "", "")
 
-	user.PopulateTraccarFields()
 	out := userToOAS(user)
 	return &out, nil
 }
@@ -253,7 +228,8 @@ func (h *Handler) createPasskeySession(ctx context.Context, user *model.User) (*
 	expiry := time.Now().Add(sessionExpiryRememberMe)
 
 	if demo.IsEnabled() && demo.IsDemoAccount(user.Email) {
-		apiKey, err := h.cfg.ApiKeys.GetByToken(ctx, localPart(user.Email))
+		token, _, _ := strings.Cut(user.Email, "@")
+		apiKey, err := h.cfg.ApiKeys.GetByToken(ctx, token)
 		if err != nil || apiKey == nil {
 			return nil, errPasskeyDemoUnavailable
 		}
@@ -261,10 +237,6 @@ func (h *Handler) createPasskeySession(ctx context.Context, user *model.User) (*
 	}
 	return h.cfg.Sessions.CreateWithExpiry(ctx, user.ID, expiry, true)
 }
-
-// ---------------------------------------------------------------------------
-// Management
-// ---------------------------------------------------------------------------
 
 // ListPasskeys returns the authenticated user's registered passkeys.
 func (h *Handler) ListPasskeys(ctx context.Context) (oas.ListPasskeysRes, error) {
@@ -276,11 +248,7 @@ func (h *Handler) ListPasskeys(ctx context.Context) (oas.ListPasskeysRes, error)
 	if err != nil {
 		return &oas.Error{Error: "failed to list passkeys"}, nil
 	}
-	result := make(oas.ListPasskeysOKApplicationJSON, 0, len(creds))
-	for _, c := range creds {
-		result = append(result, *passkeyToOAS(c))
-	}
-	return &result, nil
+	return new(mapSlice[oas.ListPasskeysOKApplicationJSON](creds, passkeyToOAS)), nil
 }
 
 // DeletePasskey removes one of the authenticated user's passkeys.
@@ -297,23 +265,14 @@ func (h *Handler) DeletePasskey(ctx context.Context, params oas.DeletePasskeyPar
 	return &oas.DeletePasskeyNoContent{}, nil
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// passkeyError is a small internal error type for passkey-specific failures.
-type passkeyError struct{ msg string }
-
-func (e *passkeyError) Error() string { return e.msg }
-
 var (
 	// errPasskeyDemoUnavailable is returned when a demo account has no read-only
 	// API key to bind the session to. Failing closed prevents a full-access
 	// demo session.
-	errPasskeyDemoUnavailable = &passkeyError{"demo passkey login is temporarily unavailable"}
-	errPasskeyNoWriter        = &passkeyError{"no response writer in context"}
-	errPasskeyNoRequest       = &passkeyError{"no request in context"}
-	errPasskeyBadCookie       = &passkeyError{"invalid challenge cookie"}
+	errPasskeyDemoUnavailable = errors.New("demo passkey login is temporarily unavailable")
+	errPasskeyNoWriter        = errors.New("no response writer in context")
+	errPasskeyNoRequest       = errors.New("no request in context")
+	errPasskeyBadCookie       = errors.New("invalid challenge cookie")
 )
 
 // loadWebauthnUser builds a webauthn.User adapter for the given user with all
@@ -337,26 +296,13 @@ func (h *Handler) userWithCredentials(ctx context.Context, userID int64) (*webau
 }
 
 // passkeyToOAS converts a stored credential to its API representation.
-func passkeyToOAS(c *model.PasskeyCredential) *oas.PasskeyCredentialInfo {
-	info := &oas.PasskeyCredentialInfo{
-		ID:        c.ID,
-		Name:      c.Name,
-		CreatedAt: c.CreatedAt,
+func passkeyToOAS(c *model.PasskeyCredential) oas.PasskeyCredentialInfo {
+	return oas.PasskeyCredentialInfo{
+		ID:         c.ID,
+		Name:       c.Name,
+		CreatedAt:  c.CreatedAt,
+		LastUsedAt: ptrToOptTime(c.LastUsedAt),
 	}
-	if c.LastUsedAt != nil {
-		info.LastUsedAt = oas.NewOptNilDateTime(*c.LastUsedAt)
-	} else {
-		info.LastUsedAt = oas.OptNilDateTime{Null: true, Set: true}
-	}
-	return info
-}
-
-// localPart returns the part of an email before the '@'.
-func localPart(email string) string {
-	if idx := strings.Index(email, "@"); idx > 0 {
-		return email[:idx]
-	}
-	return email
 }
 
 // setChallengeCookie serializes and signs the WebAuthn SessionData into a

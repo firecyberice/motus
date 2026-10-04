@@ -39,21 +39,6 @@ import (
 	"github.com/tamcore/motus/internal/websocket"
 )
 
-// shareTokenAdapter wraps a DeviceShareRepository to implement
-// websocket.ShareTokenValidator. This adapter avoids an import cycle between
-// the websocket and repository packages.
-type shareTokenAdapter struct {
-	shares *repository.DeviceShareRepository
-}
-
-func (a *shareTokenAdapter) ValidateShareToken(ctx context.Context, token string) (int64, error) {
-	share, err := a.shares.GetByToken(ctx, token)
-	if err != nil || share == nil {
-		return 0, err
-	}
-	return share.DeviceID, nil
-}
-
 // Run starts the Motus server (HTTP API, GPS protocol listeners, background
 // services) and blocks until a SIGINT or SIGTERM is received.
 func Run() {
@@ -192,7 +177,7 @@ func Run() {
 	}
 
 	redisPubSub := newRedisPubSub(redisClient, "motus:updates", "broadcasting")
-	redisInvalidationPubSub := newRedisPubSub(redisClient, cfg.Redis.InvalidationChannel, "cache invalidation")
+	redisInvalidationPubSub := newRedisPubSub(redisClient, "motus:cache:invalidate", "cache invalidation")
 
 	// WebSocket hub with origin validation and per-user filtering.
 	// Since /api/socket is outside auth middleware, we must parse session cookie manually.
@@ -216,13 +201,15 @@ func Run() {
 
 		return session.UserID
 	})
-	if redisPubSub != nil {
-		hub.SetPubSub(redisPubSub)
-	}
-	if redisInvalidationPubSub != nil {
-		hub.SetInvalidationPubSub(redisInvalidationPubSub)
-	}
-	hub.SetShareTokenValidator(&shareTokenAdapter{shares: shareRepo})
+	hub.SetPubSub(redisPubSub)
+	hub.SetInvalidationPubSub(redisInvalidationPubSub)
+	hub.SetShareTokenValidator(func(ctx context.Context, token string) (int64, error) {
+		share, err := shareRepo.GetByToken(ctx, token)
+		if err != nil || share == nil {
+			return 0, err
+		}
+		return share.DeviceID, nil
+	})
 	hub.SetAdminChecker(func(ctx context.Context, userID int64) bool {
 		user, err := userRepo.GetByID(ctx, userID)
 		if err != nil || user == nil {
@@ -388,8 +375,7 @@ func Run() {
 	router := api.NewRouter(handler, secHandler, hub, routerCfg)
 
 	// Geofence event detection service.
-	geofenceEventService := services.NewGeofenceEventService(geofenceRepo, eventRepo, positionRepo, hub, notificationService, svcLogger)
-	geofenceEventService.SetCalendarRepo(calendarRepo)
+	geofenceEventService := services.NewGeofenceEventService(geofenceRepo, eventRepo, positionRepo, calendarRepo, hub, notificationService, svcLogger)
 
 	// Motion detection service.
 	motionService := services.NewMotionService(positionRepo, eventRepo, hub, notificationService, svcLogger)
@@ -400,15 +386,14 @@ func Run() {
 	// Alarm detection service (SOS, power cut, vibration, overspeed from H02 flags).
 	alarmService := services.NewAlarmService(eventRepo, hub, notificationService, svcLogger)
 
+	// Mileage tracking service.
+	mileageService := services.NewMileageService(positionRepo, deviceRepo, eventRepo, hub, notificationService, svcLogger)
+
 	// Idle detection service.
-	idleService := services.NewIdleService(deviceRepo, positionRepo, eventRepo, hub, notificationService, svcLogger)
+	idleService := services.NewIdleService(deviceRepo, positionRepo, eventRepo, hub, notificationService, mileageService, svcLogger)
 	if cachedGeocoder != nil {
 		idleService.SetGeocoder(cachedGeocoder)
 	}
-
-	// Mileage tracking service.
-	mileageService := services.NewMileageService(positionRepo, deviceRepo, eventRepo, hub, notificationService, svcLogger)
-	idleService.SetMileageService(mileageService)
 
 	// GPS protocol position handler (stores positions and broadcasts via WebSocket).
 	gpsHandler := protocol.NewPositionHandler(positionRepo, deviceRepo, hub, geofenceEventService)
@@ -463,7 +448,7 @@ func Run() {
 		h02Server.SetRelay(cfg.GPS.H02RelayTarget)
 		slog.Info("H02 relay enabled", slog.String("target", cfg.GPS.H02RelayTarget))
 	}
-	h02Server.SetLogger(protoLogger.With(slog.String("protocol", "h02")))
+	h02Server.SetLogger(protoLogger)
 	go func() {
 		if err := h02Server.Start(gpsCtx); err != nil {
 			slog.Error("H02 server error", slog.Any("error", err))
@@ -478,7 +463,7 @@ func Run() {
 		watchServer.SetRelay(cfg.GPS.WatchRelayTarget)
 		slog.Info("WATCH relay enabled", slog.String("target", cfg.GPS.WatchRelayTarget))
 	}
-	watchServer.SetLogger(protoLogger.With(slog.String("protocol", "watch")))
+	watchServer.SetLogger(protoLogger)
 	go func() {
 		if err := watchServer.Start(gpsCtx); err != nil {
 			slog.Error("WATCH server error", slog.Any("error", err))
@@ -488,7 +473,7 @@ func Run() {
 	// OsmAnd / Traccar Client HTTP protocol (Android/iOS tracking apps).
 	osmandServer := protocol.NewOsmAndServer(cfg.GPS.OsmAndPort, deviceRepo, gpsHandler)
 	osmandServer.SetAutoCreate(autoCreateCfg, userRepo)
-	osmandServer.SetLogger(protoLogger.With(slog.String("protocol", "osmand")))
+	osmandServer.SetLogger(protoLogger)
 	go func() {
 		if err := osmandServer.Start(gpsCtx); err != nil {
 			slog.Error("OsmAnd server error", slog.Any("error", err))
@@ -562,16 +547,8 @@ func Run() {
 				)
 
 				// Smooth routes: estimate speeds, interpolate gaps, smooth transitions.
-				// Use configured interpolation interval for point density.
-				interpInterval := cfg.Demo.InterpolationInterval
-				if interpInterval <= 0 {
-					interpInterval = 100.0 // default 100m
-				}
-				slog.Debug("demo interpolation interval",
-					slog.Float64("intervalMeters", interpInterval),
-				)
 				for i, r := range routes {
-					routes[i] = demo.SmoothRouteWithInterval(r, interpInterval)
+					routes[i] = demo.SmoothRouteWithInterval(r, cfg.Demo.InterpolationInterval)
 				}
 
 				for _, r := range routes {
@@ -713,18 +690,13 @@ func deriveWebAuthnCookieKey(csrfSecret []byte) []byte {
 	return sum[:]
 }
 
-// newRedisPubSub returns a pub/sub on channel, or nil when Redis is unavailable or setup fails.
+// newRedisPubSub returns a pub/sub on channel, or nil when Redis is unavailable.
 func newRedisPubSub(client *redislib.Client, channel, purpose string) pubsub.PubSub {
 	if client == nil {
 		return nil
 	}
-	ps, err := pubsub.NewRedisPubSubFromClient(client, channel)
-	if err != nil {
-		slog.Warn("Redis pub/sub setup failed", slog.String("purpose", purpose), slog.Any("error", err))
-		return nil
-	}
 	slog.Info("Redis pub/sub enabled for cross-pod " + purpose)
-	return ps
+	return pubsub.NewRedisPubSubFromClient(client, channel)
 }
 
 func registerPprof(mux *http.ServeMux) {

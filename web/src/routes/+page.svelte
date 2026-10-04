@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { api, fetchDevices } from '$lib/api/client';
-	import { getSettings } from '$lib/stores/settings';
+	import { settings } from '$lib/stores/settings';
 	import { isAdmin } from '$lib/stores/auth';
 	import { refreshHandler } from '$lib/stores/refresh';
 	import type { Device, Position } from '$lib/types/api';
@@ -32,7 +32,7 @@
 	}
 
 	async function loadDashboard() {
-		const showAll = $isAdmin && getSettings().showAllDevices;
+		const showAll = $isAdmin && $settings.showAllDevices;
 		const todayStart = new Date();
 		todayStart.setHours(0, 0, 0, 0);
 		const [deviceList, latestPositions, todayCount] = await Promise.all([
@@ -103,7 +103,7 @@
 					<button class="retry-btn" on:click={() => { loading = true; loadDashboardWithErrorState(); }}>
 						Retry
 					</button>
-					<button class="dismiss-btn" on:click={() => (loadError = '')} aria-label="Dismiss error">
+					<button class="dismiss-icon" on:click={() => (loadError = '')} aria-label="Dismiss error">
 						&#x2715;
 					</button>
 				</div>
@@ -231,7 +231,7 @@
 						<div class="device-header">
 							<h3 class="device-name">{device.name}</h3>
 							{#if device.ownerName}
-								<span class="owner-badge" title="Owned by {device.ownerName}">{device.ownerName}</span>
+								<span class="owner-badge owner-badge-sm" title="Owned by {device.ownerName}">{device.ownerName}</span>
 							{/if}
 							<StatusIndicator status={device.status} />
 						</div>
@@ -294,7 +294,7 @@
 		font-size: var(--text-sm);
 	}
 
-	.dismiss-btn {
+	.dismiss-icon {
 		background: none;
 		border: none;
 		color: var(--error);
@@ -487,16 +487,5 @@
 	.device-card.other-user {
 		border-left: 3px solid var(--color-warning, #f59e0b);
 		background: color-mix(in srgb, var(--color-warning, #f59e0b) 4%, transparent);
-	}
-
-	.owner-badge {
-		display: inline-block;
-		font-size: 0.6rem;
-		padding: 0.05rem 0.3rem;
-		border-radius: 0.2rem;
-		background: color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent);
-		color: var(--text-secondary, #666);
-		line-height: 1.2;
-		white-space: nowrap;
 	}
 </style>

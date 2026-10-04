@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/go-faster/jx"
@@ -89,6 +89,15 @@ func deref[T any](p *T) T {
 		return zero
 	}
 	return *p
+}
+
+// mapSlice converts each element of in with f; nil input yields an empty slice.
+func mapSlice[S ~[]U, T, U any](in []T, f func(T) U) S {
+	out := make(S, len(in))
+	for i, v := range in {
+		out[i] = f(v)
+	}
+	return out
 }
 
 // attrBool extracts a bool value from an attribute map by key.
@@ -181,19 +190,13 @@ func deviceToOAS(d *model.Device) oas.Device {
 
 // userToOAS converts a model.User to oas.User.
 func userToOAS(u *model.User) oas.User {
-	var attrs oas.OptAttributes
-	if u.Attributes != nil {
-		attrs = oas.OptAttributes{Value: oas.Attributes(attrsToRaw(u.Attributes)), Set: true}
-	}
 	return oas.User{
 		ID:            u.ID,
 		Email:         u.Email,
 		Name:          u.Name,
-		Administrator: u.Administrator,
-		Readonly:      u.Readonly,
-		Disabled:      u.Disabled,
+		Administrator: u.IsAdmin(),
+		Readonly:      u.Role == model.RoleReadonly,
 		CreatedAt:     u.CreatedAt,
-		Attributes:    attrs,
 	}
 }
 
@@ -240,15 +243,10 @@ func sessionToOAS(s *model.Session) oas.Session {
 
 // apiKeyToOAS converts a model.ApiKey to oas.ApiKey.
 // includeToken controls whether the raw token is exposed (only on creation).
-func apiKeyToOAS(k *model.ApiKey, includeToken bool) oas.ApiKey {
-	var token oas.OptString
-	if includeToken && k.Token != "" {
-		token = oas.OptString{Value: k.Token, Set: true}
-	}
+func apiKeyToOAS(k *model.ApiKey) oas.ApiKey {
 	return oas.ApiKey{
 		ID:          k.ID,
 		UserId:      k.UserID,
-		Token:       token,
 		Name:        k.Name,
 		Permissions: oas.ApiKeyPermissions(k.Permissions),
 		ExpiresAt:   ptrToOptTime(k.ExpiresAt),
@@ -623,32 +621,18 @@ func buildAuditMetadata(action string, details map[string]any) oas.OptAuditMetad
 
 // auditEntryToOAS converts an audit.Entry to oas.AuditEntry.
 func auditEntryToOAS(e audit.Entry) oas.AuditEntry {
-	var (
-		userID       int64
-		resourceType oas.OptString
-		resourceID   oas.OptString
-		ipAddress    oas.OptString
-	)
-	if e.UserID != nil {
-		userID = *e.UserID
-	}
-	if e.ResourceType != nil {
-		resourceType = oas.OptString{Value: *e.ResourceType, Set: true}
-	}
+	var resourceID oas.OptString
 	if e.ResourceID != nil {
-		resourceID = oas.OptString{Value: fmt.Sprintf("%d", *e.ResourceID), Set: true}
-	}
-	if e.IPAddress != nil {
-		ipAddress = oas.OptString{Value: *e.IPAddress, Set: true}
+		resourceID = optStr(strconv.FormatInt(*e.ResourceID, 10))
 	}
 	return oas.AuditEntry{
 		ID:           e.ID,
 		Action:       e.Action,
-		UserId:       userID,
-		ResourceType: resourceType,
+		UserId:       deref(e.UserID),
+		ResourceType: optStr(deref(e.ResourceType)),
 		ResourceId:   resourceID,
 		Metadata:     buildAuditMetadata(e.Action, e.Details),
-		IpAddress:    ipAddress,
+		IpAddress:    optStr(deref(e.IPAddress)),
 		CreatedAt:    e.Timestamp,
 	}
 }

@@ -11,15 +11,14 @@ import (
 	"github.com/tamcore/motus/internal/validation"
 )
 
-// ─── ogen Handler methods ───────────────────────────────────────────────────
-
-// effectivePrefixCtx is the context-based variant of effectivePrefix.
-// It returns the prefix only when the request was authenticated via API key.
-func effectivePrefixCtx(ctx context.Context, prefix string) string {
+// deviceOut converts d for a response. API-key requests (Traccar clients such
+// as Home Assistant) get the configured unique-id prefix to avoid collisions.
+func (h *Handler) deviceOut(ctx context.Context, d *model.Device) oas.Device {
+	out := deviceToOAS(d)
 	if api.ApiKeyFromContext(ctx) != nil {
-		return prefix
+		out.UniqueId = h.cfg.UniqueIDPrefix + out.UniqueId
 	}
-	return ""
+	return out
 }
 
 // ListDevices returns all devices for the authenticated user.
@@ -32,16 +31,9 @@ func (h *Handler) ListDevices(ctx context.Context) (oas.ListDevicesRes, error) {
 	if err != nil {
 		return &oas.Error{Error: "failed to list devices"}, nil
 	}
-	if devices == nil {
-		devices = []*model.Device{}
-	}
-	prefix := effectivePrefixCtx(ctx, h.cfg.UniqueIDPrefix)
-	model.ApplyUniqueIDPrefix(devices, prefix)
-	result := make(oas.ListDevicesOKApplicationJSON, len(devices))
-	for i, d := range devices {
-		result[i] = deviceToOAS(d)
-	}
-	return &result, nil
+	return new(mapSlice[oas.ListDevicesOKApplicationJSON](devices, func(d *model.Device) oas.Device {
+		return h.deviceOut(ctx, d)
+	})), nil
 }
 
 // GetDevice returns a single device by ID.
@@ -57,10 +49,7 @@ func (h *Handler) GetDevice(ctx context.Context, params oas.GetDeviceParams) (oa
 	if err != nil {
 		return &oas.GetDeviceNotFound{Error: "device not found"}, nil
 	}
-	prefix := effectivePrefixCtx(ctx, h.cfg.UniqueIDPrefix)
-	model.ApplyUniqueIDPrefix([]*model.Device{device}, prefix)
-	out := deviceToOAS(device)
-	return &out, nil
+	return new(h.deviceOut(ctx, device)), nil
 }
 
 // CreateDevice creates a new device and associates it with the authenticated user.
@@ -83,10 +72,7 @@ func (h *Handler) CreateDevice(ctx context.Context, req *oas.DeviceInput) (oas.C
 		audit.ActionDeviceCreate, audit.ResourceDevice, &device.ID,
 		map[string]any{"name": device.Name, "uniqueId": device.UniqueID},
 		"", "")
-	prefix := effectivePrefixCtx(ctx, h.cfg.UniqueIDPrefix)
-	model.ApplyUniqueIDPrefix([]*model.Device{device}, prefix)
-	out := deviceToOAS(device)
-	return &out, nil
+	return new(h.deviceOut(ctx, device)), nil
 }
 
 // UpdateDevice modifies an existing device.
@@ -123,10 +109,7 @@ func (h *Handler) UpdateDevice(ctx context.Context, req *oas.DeviceInput, params
 		audit.ActionDeviceUpdate, audit.ResourceDevice, &device.ID,
 		map[string]any{"name": device.Name},
 		"", "")
-	prefix := effectivePrefixCtx(ctx, h.cfg.UniqueIDPrefix)
-	model.ApplyUniqueIDPrefix([]*model.Device{device}, prefix)
-	out := deviceToOAS(device)
-	return &out, nil
+	return new(h.deviceOut(ctx, device)), nil
 }
 
 // DeleteDevice removes a device by ID.
@@ -172,14 +155,7 @@ func (h *Handler) AdminListUserDevices(ctx context.Context, params oas.AdminList
 	if err != nil {
 		return &oas.AdminListUserDevicesNotFound{Error: "user or devices not found"}, nil
 	}
-	if devices == nil {
-		devices = []*model.Device{}
-	}
-	result := make(oas.AdminListUserDevicesOKApplicationJSON, len(devices))
-	for i, d := range devices {
-		result[i] = deviceToOAS(d)
-	}
-	return &result, nil
+	return new(mapSlice[oas.AdminListUserDevicesOKApplicationJSON](devices, deviceToOAS)), nil
 }
 
 // AdminAssignDevice assigns a device to a user (admin only).
@@ -223,8 +199,6 @@ func (h *Handler) AdminUnassignDevice(ctx context.Context, params oas.AdminUnass
 		"", "")
 	return &oas.AdminUnassignDeviceNoContent{}, nil
 }
-
-// ─── helpers ────────────────────────────────────────────────────────────────
 
 // applyDeviceInputFields applies the set fields of req onto a copy of d.
 func applyDeviceInputFields(d *model.Device, req *oas.DeviceInput) *model.Device {

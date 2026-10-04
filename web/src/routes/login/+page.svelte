@@ -36,12 +36,10 @@
 	let showScannerDialog = false;
 	let oidcEnabled = false;
 	let passkeyLoading = false;
-	// Evaluated in the browser only; false during SSR.
-	$: passkeySupported = typeof window !== 'undefined' && isPasskeySupported();
+	$: passkeySupported = isPasskeySupported();
 
 	// Check for errors from OIDC callback redirects.
 	function readOIDCError(): string {
-		if (typeof window === 'undefined') return '';
 		const params = new URLSearchParams(window.location.search);
 		const e = params.get('error');
 		if (e === 'signup_disabled') return 'SSO login is not available for new accounts. Please contact your administrator.';
@@ -49,10 +47,9 @@
 		return '';
 	}
 
-	$: isNative = typeof window !== 'undefined' && isNativeEnvironment();
+	$: isNative = isNativeEnvironment();
 	// Touch/mobile browsers support getUserMedia camera; WKWebView (isNative) does not.
 	$: isMobileBrowser =
-		typeof window !== 'undefined' &&
 		!isNativeEnvironment() &&
 		window.matchMedia('(pointer: coarse)').matches;
 
@@ -71,16 +68,7 @@
 			// Use the token query param to create a session. The server
 			// validates the token, creates a session cookie, and returns
 			// the user object -- matching the pytraccar/Traccar flow.
-			const response = await fetch(`/api/session?token=${encodeURIComponent(token)}`, {
-				credentials: 'include',
-			});
-			if (!response.ok) {
-				// Token is invalid or expired; let the user log in manually.
-				loading = false;
-				return;
-			}
-			const userData = await response.json();
-			currentUser.set(userData);
+			currentUser.set(await api.loginWithToken(token));
 			isAuthenticated.set(true);
 			wsManager.connect();
 			redirectAfterLogin();

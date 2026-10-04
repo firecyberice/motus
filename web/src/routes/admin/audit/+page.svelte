@@ -159,7 +159,7 @@
 
 <div class="audit-page">
 	<div class="container">
-		<div class="page-header">
+		<div class="page-header page-header-stack">
 			<div class="page-header-left">
 				<h1 class="page-title">Audit Log</h1>
 				{#if !loading}
@@ -170,7 +170,7 @@
 		</div>
 
 		<!-- Filters -->
-		<div class="filters-bar">
+		<div class="filters-bar mb-6">
 			<div class="filter-group">
 				<label for="filterAction" class="filter-label">Action</label>
 				<select id="filterAction" bind:value={filterAction} on:change={handleFilterChange} class="select">
@@ -318,24 +318,9 @@
 		padding: var(--space-6) 0;
 	}
 
-	.container {
-		max-width: 1200px;
-		margin: 0 auto;
-		padding: 0 var(--space-4);
-	}
-
 	/* Header */
 	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
 		margin-bottom: var(--space-4);
-	}
-
-	.page-header-left {
-		display: flex;
-		align-items: baseline;
-		gap: var(--space-3);
 	}
 
 	.entry-count {
@@ -348,16 +333,6 @@
 	}
 
 	/* Filters */
-	.filters-bar {
-		display: flex;
-		gap: var(--space-4);
-		margin-bottom: var(--space-6);
-		padding: var(--space-4);
-		background-color: var(--bg-secondary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-lg);
-	}
-
 	.filter-group {
 		display: flex;
 		flex-direction: column;
@@ -374,53 +349,13 @@
 
 	.select {
 		padding: var(--space-2) var(--space-3);
-		background-color: var(--bg-primary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
 		font-size: var(--text-sm);
 		min-width: 160px;
-	}
-
-	.select:focus {
-		outline: none;
-		border-color: var(--accent-primary);
-		box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
-	}
-
-	/* Error */
-	.dismiss-btn {
-		background: none;
-		border: none;
-		color: var(--error);
-		cursor: pointer;
-		font-weight: var(--font-bold);
-		padding: var(--space-1) var(--space-2);
-	}
-
-	/* Loading */
-	.loading-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		padding: var(--space-16) var(--space-4);
-		gap: var(--space-4);
-	}
-
-	.loading-state p {
-		color: var(--text-secondary);
 	}
 
 	/* Empty state */
 
 	/* Table */
-	.table-wrapper {
-		overflow-x: auto;
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-lg);
-		background-color: var(--bg-secondary);
-	}
-
 	.audit-table {
 		width: 100%;
 		border-collapse: collapse;
@@ -603,22 +538,6 @@
 
 	/* Responsive */
 	@media (max-width: 768px) {
-		.page-header {
-			flex-direction: column;
-			align-items: flex-start;
-			gap: var(--space-3);
-		}
-
-		.page-header-left {
-			flex-direction: column;
-			align-items: flex-start;
-			gap: var(--space-2);
-		}
-
-		.filters-bar {
-			flex-direction: column;
-		}
-
 		.audit-table th:nth-child(4),
 		.audit-table td:nth-child(4) {
 			display: none;

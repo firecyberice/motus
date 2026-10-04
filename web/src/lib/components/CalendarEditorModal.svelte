@@ -4,7 +4,7 @@
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import type { Calendar } from '$lib/types/api';
-	import { dateValue } from '$lib/utils/date-range';
+	import { dateValue, pad2 } from '$lib/utils/date-range';
 	import {
 		CALENDAR_TEMPLATES,
 		getScheduleSummary,
@@ -288,10 +288,6 @@
 		return `${display} ${ampm}`;
 	}
 
-	function formatMinuteOption(m: number): string {
-		return String(m).padStart(2, '0');
-	}
-
 	function toggleWeeklyDay(index: number) {
 		weeklyDays[index] = !weeklyDays[index];
 		weeklyDays = weeklyDays;
@@ -461,7 +457,7 @@
 								<label for="visual-start-min" class="sr-only">Start minute</label>
 								<select id="visual-start-min" bind:value={startMinute} class="time-select time-select-min">
 									{#each Array.from({length: 60}, (_, i) => i) as m}
-										<option value={m}>{formatMinuteOption(m)}</option>
+										<option value={m}>{pad2(m)}</option>
 									{/each}
 								</select>
 							</div>
@@ -477,7 +473,7 @@
 								<label for="visual-end-min" class="sr-only">End minute</label>
 								<select id="visual-end-min" bind:value={endMinute} class="time-select time-select-min">
 									{#each Array.from({length: 60}, (_, i) => i) as m}
-										<option value={m}>{formatMinuteOption(m)}</option>
+										<option value={m}>{pad2(m)}</option>
 									{/each}
 								</select>
 							</div>
@@ -619,18 +615,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
-	}
-
-	.form-group {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.form-label {
-		font-size: var(--text-sm);
-		font-weight: var(--font-medium);
-		color: var(--text-primary);
 	}
 
 	/* Mode Tabs */
@@ -789,20 +773,9 @@
 	}
 
 	.date-input {
-		padding: var(--space-2) var(--space-3);
 		background-color: var(--bg-tertiary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
-		font-size: var(--text-sm);
 		font-family: inherit;
 		width: 100%;
-	}
-
-	.date-input:focus {
-		outline: none;
-		border-color: var(--accent-primary);
-		box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
 	}
 
 	/* Color scheme for date input to match theme */

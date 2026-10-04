@@ -6,10 +6,40 @@ import (
 	"time"
 
 	"github.com/go-faster/jx"
+	"github.com/tamcore/motus/internal/api"
 	oas "github.com/tamcore/motus/internal/api/oas"
 	"github.com/tamcore/motus/internal/audit"
 	"github.com/tamcore/motus/internal/model"
 )
+
+func TestMapSlice(t *testing.T) {
+	got := mapSlice[oas.GetCommandTypesOKApplicationJSON]([]string{"a", "b"}, func(s string) oas.CommandType {
+		return oas.CommandType{Type: s}
+	})
+	if len(got) != 2 || got[0].Type != "a" || got[1].Type != "b" {
+		t.Errorf("got %v", got)
+	}
+	empty := mapSlice[oas.GetCommandTypesOKApplicationJSON](nil, func(s string) oas.CommandType { return oas.CommandType{} })
+	if empty == nil || len(empty) != 0 {
+		t.Errorf("nil input must yield a non-nil empty slice, got %#v", empty)
+	}
+}
+
+func TestDeviceOut_PrefixOnlyForApiKey(t *testing.T) {
+	h := NewHandler(HandlerConfig{UniqueIDPrefix: "m-"})
+	d := &model.Device{UniqueID: "123"}
+
+	if got := h.deviceOut(t.Context(), d).UniqueId; got != "123" {
+		t.Errorf("session request: UniqueId = %q, want 123", got)
+	}
+	keyCtx := api.ContextWithApiKey(t.Context(), &model.ApiKey{ID: 1})
+	if got := h.deviceOut(keyCtx, d).UniqueId; got != "m-123" {
+		t.Errorf("api key request: UniqueId = %q, want m-123", got)
+	}
+	if d.UniqueID != "123" {
+		t.Errorf("model mutated: %q", d.UniqueID)
+	}
+}
 
 func TestRawToAttrs(t *testing.T) {
 	raw := map[string]jx.Raw{
@@ -137,24 +167,27 @@ func TestDeviceToOAS(t *testing.T) {
 
 func TestUserToOAS(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	u := &model.User{
-		ID:            1,
-		Email:         "alice@example.com",
-		Name:          "Alice",
-		Administrator: true,
-		Readonly:      false,
-		Disabled:      false,
-		CreatedAt:     now,
-	}
+	u := &model.User{ID: 1, Email: "alice@example.com", Name: "Alice", Role: model.RoleAdmin, CreatedAt: now}
 	got := userToOAS(u)
 	if got.ID != 1 || got.Email != "alice@example.com" {
 		t.Errorf("unexpected user: %+v", got)
 	}
-	if !got.Administrator {
-		t.Error("Administrator should be true")
-	}
 	if got.Attributes.Set {
-		t.Error("Attributes should not be set when nil")
+		t.Error("Attributes should not be set")
+	}
+
+	for _, tt := range []struct {
+		role                string
+		wantAdmin, wantRead bool
+	}{
+		{model.RoleAdmin, true, false},
+		{model.RoleUser, false, false},
+		{model.RoleReadonly, false, true},
+	} {
+		got := userToOAS(&model.User{Role: tt.role})
+		if got.Administrator != tt.wantAdmin || got.Readonly != tt.wantRead || got.Disabled {
+			t.Errorf("role %q: administrator=%v readonly=%v disabled=%v", tt.role, got.Administrator, got.Readonly, got.Disabled)
+		}
 	}
 }
 
@@ -284,14 +317,9 @@ func TestApiKeyToOAS(t *testing.T) {
 		Permissions: "full",
 		CreatedAt:   now,
 	}
-	withToken := apiKeyToOAS(k, true)
-	if !withToken.Token.Set || withToken.Token.Value != "secret-token" {
-		t.Error("token should be included when includeToken=true")
-	}
-
-	withoutToken := apiKeyToOAS(k, false)
+	withoutToken := apiKeyToOAS(k)
 	if withoutToken.Token.Set {
-		t.Error("token should not be included when includeToken=false")
+		t.Error("token must not be included")
 	}
 	if withoutToken.Permissions != oas.ApiKeyPermissionsFull {
 		t.Errorf("Permissions = %v, want full", withoutToken.Permissions)

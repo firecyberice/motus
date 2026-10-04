@@ -23,11 +23,7 @@ func (h *Handler) ListApiKeys(ctx context.Context) (oas.ListApiKeysRes, error) {
 		return &oas.Error{Error: "failed to list API keys"}, nil
 	}
 
-	result := make(oas.ListApiKeysOKApplicationJSON, 0, len(keys))
-	for _, k := range keys {
-		result = append(result, apiKeyToOAS(k, false))
-	}
-	return &result, nil
+	return new(mapSlice[oas.ListApiKeysOKApplicationJSON](keys, apiKeyToOAS)), nil
 }
 
 // CreateApiKey creates a new API key for the authenticated user.
@@ -45,9 +41,6 @@ func (h *Handler) CreateApiKey(ctx context.Context, req *oas.ApiKeyInput) (oas.C
 	permissions := model.PermissionFull
 	if p, ok := req.Permissions.Get(); ok {
 		permissions = string(p)
-	}
-	if !model.IsValidPermission(permissions) {
-		return &oas.CreateApiKeyBadRequest{Error: "permissions must be 'full' or 'readonly'"}, nil
 	}
 
 	var expiresAt *time.Time
@@ -73,7 +66,8 @@ func (h *Handler) CreateApiKey(ctx context.Context, req *oas.ApiKeyInput) (oas.C
 	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionApiKeyCreate, audit.ResourceApiKey, &key.ID,
 		map[string]any{"name": key.Name, "permissions": key.Permissions}, "", "")
 
-	result := apiKeyToOAS(key, true)
+	result := apiKeyToOAS(key)
+	result.Token = optStr(key.Token)
 	return &result, nil
 }
 

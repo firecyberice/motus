@@ -27,6 +27,32 @@ type Position struct {
 	Attributes  map[string]any `json:"attributes"`
 }
 
+// SpeedOrZero returns the speed in km/h, or 0 when it is unknown.
+func (p *Position) SpeedOrZero() float64 {
+	if p.Speed == nil {
+		return 0
+	}
+	return *p.Speed
+}
+
+const kmhPerKnot = 1.852
+
+// KnotsToKmh converts a speed from knots to km/h.
+func KnotsToKmh(knots float64) float64 { return knots * kmhPerKnot }
+
+// KmhToKnots converts a speed from km/h to knots.
+func KmhToKnots(kmh float64) float64 { return kmh / kmhPerKnot }
+
+// InKnots returns a copy of p with Speed converted from km/h to knots, the
+// unit of the Traccar API.
+func (p *Position) InKnots() *Position {
+	cp := *p
+	if p.Speed != nil {
+		cp.Speed = new(KmhToKnots(*p.Speed))
+	}
+	return &cp
+}
+
 // PositionPoint is the subset of a position map views need. Speed is in km/h.
 type PositionPoint struct {
 	Lat      float64
