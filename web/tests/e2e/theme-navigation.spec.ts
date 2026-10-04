@@ -50,6 +50,26 @@ test.describe('Theme Switching', () => {
 });
 
 test.describe('Navigation', () => {
+  for (const width of [1000, 1400]) {
+    test(`should not overflow the page horizontally at ${width}px`, async ({ authedPage }) => {
+      await authedPage.setViewportSize({ width, height: 800 });
+      await authedPage.goto('/bookmarks');
+      await authedPage.waitForLoadState('networkidle');
+      const overflow = await authedPage.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow).toBeLessThanOrEqual(0);
+      // Inline links must all be visible; otherwise the menu toggle takes over.
+      const links = authedPage.locator('.nav-center a.nav-link');
+      if (await links.first().isVisible()) {
+        const lastRight = await links.last().evaluate((el) => el.getBoundingClientRect().right);
+        expect(lastRight).toBeLessThanOrEqual(width);
+      } else {
+        await expect(authedPage.locator('.menu-toggle')).toBeVisible();
+      }
+    });
+  }
+
   test('should show all navigation links', async ({ authedPage }) => {
     for (const link of NAV_LINKS) {
       if (link.label === 'Map') {

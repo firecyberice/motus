@@ -8,7 +8,7 @@
 	import { wsManager } from '$lib/stores/websocket';
 	import { pwa } from '$lib/stores/pwa';
 	import { api, APIError } from '$lib/api/client';
-	import { hydrateAuthToken, setAuthToken } from '$lib/auth-token-store';
+	import { setAuthToken } from '$lib/auth-token-store';
 	import { buildLoginUrl } from '$lib/utils/returnTo';
 	import PullToRefresh from '$lib/components/PullToRefresh.svelte';
 	import {
@@ -39,11 +39,6 @@
 	onMount(async () => {
 		theme.initialize();
 		pwa.initialize();
-
-		// Re-hydrate the auth token from IndexedDB before any authenticated
-		// API call fires. iOS PWA cold starts purge localStorage, but
-		// IndexedDB survives, so this restores the X-Auth-Token fallback.
-		await hydrateAuthToken();
 
 		// Load server info (aiEnabled flag for chat nav link) in parallel.
 		loadServerInfo();
@@ -165,7 +160,7 @@
 
 {#if loading}
 	<div class="loading-screen">
-		<div class="spinner"></div>
+		<div class="spinner spinner-lg"></div>
 	</div>
 {:else if $page.url.pathname.startsWith('/share/')}
 	<slot />
@@ -277,14 +272,6 @@
 		background-color: var(--bg-primary);
 	}
 
-	.spinner {
-		width: 48px;
-		height: 48px;
-		border: 4px solid var(--border-color);
-		border-top-color: var(--accent-primary);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
 
 	.app-layout {
 		min-height: 100vh;
@@ -313,6 +300,7 @@
 	.nav-left {
 		display: flex;
 		align-items: center;
+		flex-shrink: 0;
 	}
 
 	.logo {
@@ -331,11 +319,12 @@
 
 	.nav-center {
 		display: flex;
-		gap: var(--space-2);
+		gap: var(--space-1);
 	}
 
 	.nav-link {
-		padding: var(--space-3) var(--space-4);
+		white-space: nowrap;
+		padding: var(--space-2) var(--space-3);
 		text-decoration: none;
 		color: var(--text-secondary);
 		font-weight: var(--font-medium);
@@ -357,8 +346,8 @@
 		content: '';
 		position: absolute;
 		bottom: 0;
-		left: var(--space-4);
-		right: var(--space-4);
+		left: var(--space-3);
+		right: var(--space-3);
 		height: 2px;
 		background-color: var(--accent-primary);
 	}
@@ -367,6 +356,7 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-4);
+		flex-shrink: 0;
 	}
 
 	.user-menu {
@@ -446,7 +436,8 @@
 		background-color: var(--bg-primary);
 	}
 
-	@media (max-width: 768px) {
+	/* All nav links fit inline from 1360px (1400px container); below, use the menu. */
+	@media (max-width: 1359px) {
 		.nav-center {
 			display: none;
 			position: absolute;
