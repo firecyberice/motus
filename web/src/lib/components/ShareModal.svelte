@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, createEventDispatcher } from 'svelte';
 	import { api } from '$lib/api/client';
-	import { formatDate } from '$lib/utils/formatting';
+	import { formatDate, isExpired } from '$lib/utils/formatting';
 	import { hoursFromNow } from '$lib/utils/date-range';
 	import { copyText } from '$lib/utils/clipboard';
 	import type { DeviceShare } from '$lib/types/api';
@@ -93,11 +93,6 @@
 		if (date < new Date()) return 'Expired';
 		return formatDate(expiresAt);
 	}
-
-	function isExpired(expiresAt?: string | null): boolean {
-		if (!expiresAt) return false;
-		return new Date(expiresAt) < new Date();
-	}
 </script>
 
 <Modal {open} title="Share {deviceName}" on:close={handleClose}>
@@ -117,7 +112,7 @@
 		</div>
 
 		{#if error}
-			<div class="error-msg" role="alert">{error}</div>
+			<div class="form-error" role="alert">{error}</div>
 		{/if}
 
 		{#if shareLink}
@@ -187,15 +182,6 @@
 
 	.form-action {
 		flex-shrink: 0;
-	}
-
-	.error-msg {
-		padding: var(--space-3);
-		background-color: rgba(255, 59, 48, 0.15);
-		border: 1px solid var(--error);
-		border-radius: var(--radius-md);
-		color: var(--error);
-		font-size: var(--text-sm);
 	}
 
 	.share-link {

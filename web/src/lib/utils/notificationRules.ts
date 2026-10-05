@@ -14,6 +14,10 @@ export const EVENT_TYPES = [
   { value: "tripCompleted", label: "Trip Completed" },
 ];
 
+export function getEventLabel(eventType: string): string {
+  return EVENT_TYPES.find((e) => e.value === eventType)?.label || eventType;
+}
+
 export const CHANNELS = [
   { value: "webhook", label: "Webhook" },
   { value: "command", label: "Device Command" },
@@ -127,7 +131,7 @@ export function describeGeofenceFilter(
 }
 
 /** A checkbox of the geofence filter in the rule editor. */
-export interface GeofenceFilterOption {
+interface GeofenceFilterOption {
   id: number;
   label: string;
   /** Selected in the rule but not in the lookup (deleted or inaccessible). */

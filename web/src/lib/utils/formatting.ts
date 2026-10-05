@@ -3,6 +3,12 @@ import { settings, type UserSettings } from "$lib/stores/settings";
 
 const KM_TO_MI = 0.621371;
 
+/** The user's timezone setting; undefined means browser-local. */
+export function userTimeZone(): string | undefined {
+  const { timezone } = get(settings);
+  return timezone === "local" ? undefined : timezone;
+}
+
 /**
  * Format a date string or Date object according to user preferences.
  * Respects the user's timezone setting for proper local time display.
@@ -13,8 +19,7 @@ export function formatDate(date: string | Date): string {
 
   if (isNaN(d.getTime())) return String(date);
 
-  // Determine timezone to use — undefined means browser-local
-  const timezone = s.timezone === "local" ? undefined : s.timezone;
+  const timezone = userTimeZone();
 
   switch (s.dateFormat) {
     case "locale":
@@ -40,6 +45,7 @@ export function formatDate(date: string | Date): string {
 export function formatRelative(date: Date): string {
   const now = new Date();
   const diff = now.getTime() - date.getTime();
+  if (isNaN(diff)) return "Unknown";
   const seconds = Math.floor(diff / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
@@ -50,6 +56,14 @@ export function formatRelative(date: Date): string {
   if (hours < 24) return `${hours} hour${hours > 1 ? "s" : ""} ago`;
   if (days < 30) return `${days} day${days > 1 ? "s" : ""} ago`;
   return date.toLocaleDateString();
+}
+
+export function formatLastUsed(lastUsedAt: string | null | undefined): string {
+  return lastUsedAt ? formatDate(lastUsedAt) : "Never";
+}
+
+export function isExpired(expiresAt: string | null | undefined): boolean {
+  return !!expiresAt && new Date(expiresAt) < new Date();
 }
 
 /** Input speed is always in km/h. */

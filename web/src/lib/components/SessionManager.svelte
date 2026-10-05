@@ -5,9 +5,6 @@
 	import { formatDate } from '$lib/utils/formatting';
 	import Button from '$lib/components/Button.svelte';
 
-	// ---------------------------------------------------------------------------
-	// List state
-	// ---------------------------------------------------------------------------
 	let loading = true;
 	let sessions: Session[] = [];
 	let listError = '';
@@ -16,9 +13,6 @@
 
 	$: otherSessionCount = sessions.filter((s) => !s.isCurrent).length;
 
-	// ---------------------------------------------------------------------------
-	// Lifecycle
-	// ---------------------------------------------------------------------------
 	onMount(() => {
 		loadSessions();
 	});
@@ -35,9 +29,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Delete
-	// ---------------------------------------------------------------------------
 	async function revokeSession(id: string) {
 		if (!confirm(`Revoke session ${truncateId(id)}? That session will be immediately logged out.`)) return;
 		actionError = '';
@@ -49,9 +40,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Revoke all
-	// ---------------------------------------------------------------------------
 	async function revokeAll() {
 		if (!confirm('Revoke all other sessions? Every session except this one will be immediately logged out.')) return;
 		actionError = '';
@@ -63,9 +51,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Helpers
-	// ---------------------------------------------------------------------------
 	function truncateId(id: string): string {
 		if (id.length > 12) return id.substring(0, 12) + '\u2026';
 		return id;
@@ -95,7 +80,7 @@
 	{#if loading}
 		<p class="loading-text">Loading sessions...</p>
 	{:else if listError}
-		<div class="message error">{listError}</div>
+		<div class="form-error">{listError}</div>
 	{:else if sessions.length === 0}
 		<div class="empty-state">
 			<p class="empty-title">No active sessions</p>
@@ -162,7 +147,7 @@
 	{/if}
 
 	{#if actionError}
-		<div class="message error" role="alert">{actionError}</div>
+		<div class="form-error" role="alert">{actionError}</div>
 	{/if}
 </section>
 
@@ -176,42 +161,6 @@
 		font-weight: var(--font-semibold);
 		color: var(--text-primary);
 		font-size: var(--text-sm);
-	}
-
-	.session-badge {
-		display: inline-flex;
-		align-items: center;
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs);
-		font-weight: var(--font-medium);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.badge-current {
-		background-color: rgba(0, 212, 255, 0.15);
-		color: var(--accent-primary);
-		border: 1px solid rgba(0, 212, 255, 0.3);
-	}
-
-	.badge-apikey {
-		background-color: rgba(168, 85, 247, 0.15);
-		color: #a855f7;
-		border: 1px solid rgba(168, 85, 247, 0.3);
-		text-transform: none;
-	}
-
-	.badge-persistent {
-		background-color: rgba(0, 255, 136, 0.15);
-		color: var(--success);
-		border: 1px solid rgba(0, 255, 136, 0.3);
-	}
-
-	.badge-temporary {
-		background-color: rgba(255, 170, 0, 0.15);
-		color: var(--warning);
-		border: 1px solid rgba(255, 170, 0, 0.3);
 	}
 
 	.session-last-seen {

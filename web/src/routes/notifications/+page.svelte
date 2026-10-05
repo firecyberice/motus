@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { api, fetchNotifications } from '$lib/api/client';
-	import { currentUser, isAdmin } from '$lib/stores/auth';
+	import { api, fetchNotifications, stripOwnOwnerName } from '$lib/api/client';
+	import { isAdmin } from '$lib/stores/auth';
 	import { refreshHandler } from '$lib/stores/refresh';
 	import Button from '$lib/components/Button.svelte';
 	import Input from '$lib/components/Input.svelte';
@@ -28,6 +28,7 @@
 		describeCommandAction,
 		describeGeofenceFilter,
 		geofenceFilterOptions,
+		getEventLabel,
 		hasGeofenceEvent
 	} from '$lib/utils/notificationRules';
 
@@ -79,10 +80,7 @@
 			if ($isAdmin) {
 				// Full lookup regardless of the "All users" toggle; the owner is
 				// shown only for other users' geofences.
-				const myName = $currentUser?.name || '';
-				geofences = (await api.getAllGeofences()).map((g) =>
-					g.ownerName && g.ownerName === myName ? { ...g, ownerName: undefined } : g
-				);
+				geofences = stripOwnOwnerName(await api.getAllGeofences());
 			} else {
 				geofences = await api.getGeofences();
 			}
@@ -289,10 +287,6 @@
 		return CHANNELS.find((c) => c.value === channel)?.label || channel;
 	}
 
-	function getEventLabel(eventType: string): string {
-		return EVENT_TYPES.find((e) => e.value === eventType)?.label || eventType;
-	}
-
 	function getDestination(rule: NotificationRule): string {
 		if (rule.config?.channel === 'command') return describeCommandAction(rule.config);
 		if (rule.config?.channel === 'webhook') return rule.config.webhookUrl || 'No URL set';
@@ -351,9 +345,9 @@
 								<h3 class="rule-name">{rule.name}</h3>
 								<div class="rule-badges">
 									{#each rule.eventTypes as et}
-										<span class="rule-event">{getEventLabel(et)}</span>
+										<span class="event-badge">{getEventLabel(et)}</span>
 									{/each}
-									<span class="rule-channel channel-{rule.channel}">{getChannelLabel(rule.channel)}</span>
+									<span class="channel-badge channel-{rule.channel}">{getChannelLabel(rule.channel)}</span>
 									{#if rule.ownerName}
 										<span class="owner-badge" title="Owned by {rule.ownerName}">{rule.ownerName}</span>
 									{/if}
@@ -548,8 +542,8 @@
 				<span class="form-label">Headers (optional)</span>
 				{#each formHeaders as header, i}
 					<div class="header-row">
-						<input type="text" placeholder="Key" bind:value={header.key} class="header-input" />
-						<input type="text" placeholder="Value" bind:value={header.value} class="header-input" />
+						<input type="text" placeholder="Key" bind:value={header.key} class="header-input field-sm" />
+						<input type="text" placeholder="Value" bind:value={header.value} class="header-input field-sm" />
 						<button
 							type="button"
 							on:click={() => removeHeader(i)}
@@ -656,22 +650,6 @@
 		gap: var(--space-2);
 		flex-wrap: wrap;
 	}
-	.rule-event {
-		display: inline-block;
-		padding: var(--space-1) var(--space-2);
-		background-color: var(--bg-tertiary);
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs);
-		color: var(--text-secondary);
-		text-transform: uppercase;
-	}
-	.rule-channel {
-		display: inline-block;
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs);
-		font-weight: var(--font-medium);
-	}
 
 	/* Toggle */
 	.toggle-switch {
@@ -767,7 +745,7 @@
 		background: none;
 		border: none;
 		color: var(--accent-primary);
-		font-size: var(--text-xs, 0.75rem);
+		font-size: var(--text-xs);
 		cursor: pointer;
 		padding: 0;
 	}
@@ -778,14 +756,14 @@
 	.event-type-grid {
 		display: grid;
 		grid-template-columns: repeat(2, 1fr);
-		gap: var(--space-1, 0.25rem) var(--space-3, 0.75rem);
+		gap: var(--space-1) var(--space-3);
 	}
 
 	.event-type-checkbox {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2, 0.5rem);
-		font-size: var(--text-sm, 0.875rem);
+		gap: var(--space-2);
+		font-size: var(--text-sm);
 		color: var(--text-primary);
 		cursor: pointer;
 		user-select: none;
@@ -794,33 +772,34 @@
 	.event-type-checkbox input[type="checkbox"] {
 		width: 0.9rem;
 		height: 0.9rem;
-		accent-color: var(--accent-primary, #3b82f6);
+		accent-color: var(--accent-primary);
 		cursor: pointer;
 		margin: 0;
 	}
 
 	.form-hint {
-		font-size: var(--text-xs, 0.75rem);
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 	}
 	.form-hint--error {
-		font-size: var(--text-xs, 0.75rem);
-		color: var(--error, #ef4444);
+		font-size: var(--text-xs);
+		color: var(--error);
 	}
 	.form-error {
+		border: none;
 		padding: var(--space-2) var(--space-3);
 		border-radius: var(--radius-md);
-		background-color: color-mix(in srgb, var(--error, #ef4444) 12%, transparent);
-		color: var(--error, #ef4444);
+		background-color: color-mix(in srgb, var(--error) 12%, transparent);
+		color: var(--error);
 		font-size: var(--text-sm);
 	}
 	.form-hint--warning {
-		font-size: var(--text-xs, 0.75rem);
-		color: var(--warning, #f59e0b);
+		font-size: var(--text-xs);
+		color: var(--warning);
 	}
 	.geofence-unavailable span {
 		font-style: italic;
-		color: var(--warning, #f59e0b);
+		color: var(--warning);
 	}
 
 	/* Headers */
@@ -830,17 +809,7 @@
 	}
 	.header-input {
 		flex: 1;
-		padding: var(--space-2) var(--space-3);
 		background-color: var(--bg-secondary);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
-		font-size: var(--text-sm);
-	}
-	.header-input:focus {
-		outline: none;
-		border-color: var(--accent-primary);
-		box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
 	}
 	.remove-btn {
 		padding: var(--space-2) var(--space-3);
@@ -862,11 +831,6 @@
 		font-family: 'Courier New', monospace;
 		font-size: var(--text-sm);
 		resize: vertical;
-	}
-	.template-textarea:focus {
-		outline: none;
-		border-color: var(--accent-primary);
-		box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
 	}
 	.template-variables {
 		display: flex;
@@ -896,10 +860,5 @@
 	.variable-btn:hover {
 		background-color: var(--accent-primary);
 		color: var(--text-inverse);
-	}
-
-	.rule-card.other-user {
-		border-left: 3px solid var(--color-warning, #f59e0b);
-		background: color-mix(in srgb, var(--color-warning, #f59e0b) 4%, transparent);
 	}
 </style>

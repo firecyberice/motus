@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import type { ApiKey } from '$lib/types/api';
-	import { formatDate } from '$lib/utils/formatting';
+	import { formatDate, formatLastUsed, isExpired } from '$lib/utils/formatting';
 	import { dateValue, hoursFromNow, parseLocalBoundary } from '$lib/utils/date-range';
 	import Button from '$lib/components/Button.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -10,16 +10,10 @@
 	import QrCodeDialog from '$lib/components/QrCodeDialog.svelte';
 	import { copyText } from '$lib/utils/clipboard';
 
-	// ---------------------------------------------------------------------------
-	// List state
-	// ---------------------------------------------------------------------------
 	let loading = true;
 	let apiKeys: ApiKey[] = [];
 	let listError = '';
 
-	// ---------------------------------------------------------------------------
-	// Create modal state
-	// ---------------------------------------------------------------------------
 	let showCreateModal = false;
 	let newKeyName = '';
 	let newKeyPermissions = 'full';
@@ -33,15 +27,9 @@
 
 	let actionError = '';
 
-	// ---------------------------------------------------------------------------
-	// QR Code dialog state
-	// ---------------------------------------------------------------------------
 	let showQrDialog = false;
 	let qrToken = '';
 
-	// ---------------------------------------------------------------------------
-	// Lifecycle
-	// ---------------------------------------------------------------------------
 	onMount(() => {
 		loadKeys();
 	});
@@ -58,9 +46,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Create
-	// ---------------------------------------------------------------------------
 	function resetCreateForm() {
 		newKeyName = '';
 		newKeyPermissions = 'full';
@@ -143,18 +128,12 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Copy token
-	// ---------------------------------------------------------------------------
 	async function copyToken() {
 		if (!createdToken || !(await copyText(createdToken, tokenInputEl))) return;
 		tokenCopied = true;
 		setTimeout(() => (tokenCopied = false), 2000);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Delete
-	// ---------------------------------------------------------------------------
 	async function deleteKey(key: ApiKey) {
 		if (!confirm(`Revoke "${key.name}"? Any integrations using this key will immediately stop working.`)) return;
 		actionError = '';
@@ -166,9 +145,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// QR Code
-	// ---------------------------------------------------------------------------
 	function openQrDialog(token: string) {
 		qrToken = token;
 		showQrDialog = true;
@@ -179,21 +155,8 @@
 		qrToken = '';
 	}
 
-	// ---------------------------------------------------------------------------
-	// Helpers
-	// ---------------------------------------------------------------------------
-	function formatLastUsed(lastUsedAt: string | null | undefined): string {
-		if (!lastUsedAt) return 'Never';
-		return formatDate(lastUsedAt);
-	}
-
 	function getPermissionLabel(perm: string): string {
 		return perm === 'full' ? 'Full Access' : 'Read-Only';
-	}
-
-	function isExpired(expiresAt: string | null | undefined): boolean {
-		if (!expiresAt) return false;
-		return new Date(expiresAt) < new Date();
 	}
 
 	function formatExpiration(expiresAt: string | null | undefined): string {
@@ -225,7 +188,7 @@
 	{#if loading}
 		<p class="loading-text">Loading API keys...</p>
 	{:else if listError}
-		<div class="message error">{listError}</div>
+		<div class="form-error">{listError}</div>
 	{:else if apiKeys.length === 0}
 		<div class="empty-state">
 			<p class="empty-title">No API keys</p>
@@ -294,7 +257,7 @@
 	</details>
 
 	{#if actionError}
-		<div class="message error" role="alert">{actionError}</div>
+		<div class="form-error" role="alert">{actionError}</div>
 	{/if}
 </section>
 
@@ -396,7 +359,7 @@
 						<input
 							id="keyCustomDate"
 							type="date"
-							class="date-input"
+							class="field-sm field-full"
 							bind:value={newKeyCustomDate}
 							min={getMinDate()}
 						/>
@@ -419,7 +382,7 @@
 			{/if}
 
 			{#if createError}
-				<div class="message error">{createError}</div>
+				<div class="form-error">{createError}</div>
 			{/if}
 		</form>
 	{/if}
@@ -452,35 +415,6 @@
 />
 
 <style>
-	.permission-badge {
-		display: inline-flex;
-		align-items: center;
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs);
-		font-weight: var(--font-medium);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.badge-full {
-		background-color: rgba(0, 212, 255, 0.15);
-		color: var(--accent-primary);
-		border: 1px solid rgba(0, 212, 255, 0.3);
-	}
-
-	.badge-readonly {
-		background-color: rgba(255, 170, 0, 0.15);
-		color: var(--warning);
-		border: 1px solid rgba(255, 170, 0, 0.3);
-	}
-
-	.badge-expired {
-		background-color: rgba(255, 68, 68, 0.15);
-		color: var(--error);
-		border: 1px solid rgba(255, 68, 68, 0.3);
-	}
-
 	.key-card.key-expired {
 		opacity: 0.6;
 		border-color: var(--error);
@@ -497,14 +431,13 @@
 		font-size: var(--text-xs);
 	}
 
-	.date-input {
-		width: 100%;
+	.field-sm {
 		padding: var(--space-3) var(--space-4);
 		font-size: var(--text-base);
 		transition: border-color var(--transition-fast);
 	}
 
-	.date-input:hover {
+	.field-sm:hover {
 		border-color: var(--border-hover);
 	}
 
@@ -538,12 +471,6 @@
 		font-size: var(--text-sm);
 		cursor: text;
 		min-width: 0;
-	}
-
-	.token-input:focus {
-		outline: none;
-		border-color: var(--accent-primary);
-		box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
 	}
 
 	.copy-btn {

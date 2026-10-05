@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import type { PasskeyCredentialInfo } from '$lib/types/api';
-	import { formatDate } from '$lib/utils/formatting';
+	import { formatDate, formatLastUsed } from '$lib/utils/formatting';
 	import {
 		isPasskeySupported,
 		registerPasskey,
@@ -14,16 +14,10 @@
 
 	const supported = isPasskeySupported();
 
-	// ---------------------------------------------------------------------------
-	// List state
-	// ---------------------------------------------------------------------------
 	let loading = true;
 	let passkeys: PasskeyCredentialInfo[] = [];
 	let listError = '';
 
-	// ---------------------------------------------------------------------------
-	// Create modal state
-	// ---------------------------------------------------------------------------
 	let showCreateModal = false;
 	let newPasskeyName = '';
 	let creating = false;
@@ -31,9 +25,6 @@
 
 	let actionError = '';
 
-	// ---------------------------------------------------------------------------
-	// Lifecycle
-	// ---------------------------------------------------------------------------
 	onMount(() => {
 		if (supported) {
 			loadPasskeys();
@@ -54,9 +45,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Create
-	// ---------------------------------------------------------------------------
 	function openCreateModal() {
 		showCreateModal = true;
 		newPasskeyName = '';
@@ -94,9 +82,6 @@
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Delete
-	// ---------------------------------------------------------------------------
 	async function removePasskey(passkey: PasskeyCredentialInfo) {
 		if (!confirm(`Remove "${passkey.name}"? You will no longer be able to sign in with this passkey.`)) return;
 		actionError = '';
@@ -106,14 +91,6 @@
 		} catch (e: unknown) {
 			actionError = e instanceof Error ? e.message : 'Please try again.';
 		}
-	}
-
-	// ---------------------------------------------------------------------------
-	// Helpers
-	// ---------------------------------------------------------------------------
-	function formatLastUsed(lastUsedAt: string | null | undefined): string {
-		if (!lastUsedAt) return 'Never';
-		return formatDate(lastUsedAt);
 	}
 
 </script>
@@ -135,7 +112,7 @@
 		{#if loading}
 			<p class="loading-text">Loading passkeys...</p>
 		{:else if listError}
-			<div class="message error">{listError}</div>
+			<div class="form-error">{listError}</div>
 		{:else if passkeys.length === 0}
 			<div class="empty-state">
 				<p class="empty-title">No passkeys</p>
@@ -168,7 +145,7 @@
 		{/if}
 
 		{#if actionError}
-			<div class="message error" role="alert">{actionError}</div>
+			<div class="form-error" role="alert">{actionError}</div>
 		{/if}
 	</section>
 
@@ -191,7 +168,7 @@
 			</p>
 
 			{#if createError}
-				<div class="message error">{createError}</div>
+				<div class="form-error">{createError}</div>
 			{/if}
 		</form>
 

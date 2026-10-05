@@ -52,7 +52,7 @@
 
 	<div class="qr-container">
 		{#if error}
-			<div class="error-message">{error}</div>
+			<div class="error-text">{error}</div>
 		{:else}
 			<canvas bind:this={canvas}></canvas>
 		{/if}
@@ -106,7 +106,7 @@
 		height: auto;
 	}
 
-	.error-message {
+	.error-text {
 		color: var(--error);
 		text-align: center;
 		padding: var(--space-4);
@@ -139,7 +139,7 @@
 		width: 100%;
 		padding: var(--space-3);
 		background-color: var(--bg-primary);
-		border: 1px solid var(--border-primary);
+		border: 1px solid var(--border-color);
 		border-radius: var(--radius-md);
 		color: var(--text-primary);
 		font-family: monospace;

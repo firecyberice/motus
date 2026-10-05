@@ -8,7 +8,6 @@
 	import {
 		isNativeEnvironment,
 		nativePostMessage,
-		handleLoginTokenListeners,
 		generateLoginToken,
 		changeServerUrl,
 	} from '$lib/utils/native-interface';
@@ -133,13 +132,13 @@
 		// Request the stored login token from the native app.
 		// If the app has one, handleTokenLogin will be called.
 		if (isNativeEnvironment()) {
-			handleLoginTokenListeners.add(handleTokenLogin);
+			window.handleLoginToken = handleTokenLogin;
 			nativePostMessage('authentication');
 		}
 	});
 
 	onDestroy(() => {
-		handleLoginTokenListeners.delete(handleTokenLogin);
+		delete window.handleLoginToken;
 	});
 
 	async function handleLogin() {
@@ -400,15 +399,6 @@
 		line-height: 1;
 	}
 
-	.error-message {
-		padding: var(--space-3);
-		background-color: rgba(255, 68, 68, 0.1);
-		border: 1px solid var(--error);
-		border-radius: var(--radius-md);
-		color: var(--error);
-		font-size: var(--text-sm);
-	}
-
 	.change-server {
 		margin-top: var(--space-4);
 		text-align: center;
@@ -441,7 +431,7 @@
 		align-items: center;
 		gap: var(--space-3);
 		margin-top: var(--space-4);
-		color: var(--text-muted, var(--text-secondary));
+		color: var(--text-secondary);
 		font-size: var(--text-sm);
 	}
 
@@ -450,7 +440,7 @@
 		content: '';
 		flex: 1;
 		height: 1px;
-		background-color: var(--border-color, var(--bg-hover));
+		background-color: var(--border-color);
 	}
 
 	.sso-button {
@@ -461,8 +451,8 @@
 		width: 100%;
 		margin-top: var(--space-3);
 		padding: var(--space-3) var(--space-4);
-		background-color: var(--bg-tertiary, var(--bg-hover));
-		border: 1px solid var(--border-color, transparent);
+		background-color: var(--bg-tertiary);
+		border: 1px solid var(--border-color);
 		border-radius: var(--radius-md);
 		color: var(--text-primary);
 		font-size: var(--text-sm);
