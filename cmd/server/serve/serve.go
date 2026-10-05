@@ -6,12 +6,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,7 +31,6 @@ import (
 	"github.com/tamcore/motus/internal/config"
 	"github.com/tamcore/motus/internal/demo"
 	"github.com/tamcore/motus/internal/geocoding"
-	"github.com/tamcore/motus/internal/logger"
 	"github.com/tamcore/motus/internal/notification"
 	"github.com/tamcore/motus/internal/protocol"
 	"github.com/tamcore/motus/internal/pubsub"
@@ -48,17 +49,7 @@ func Run() {
 		os.Exit(1)
 	}
 
-	// Initialize structured logger and set as the process-wide default.
-	// This ensures any code using slog.Info/slog.Error/etc. picks up our
-	// format and level configuration.
-	logFormat := cfg.Log.Format
-	if logFormat == "" {
-		logFormat = logger.FormatForEnv(cfg.Security.Env)
-	}
-	appLogger := logger.New(logger.Options{
-		Level:  cfg.Log.Level,
-		Format: logFormat,
-	})
+	appLogger, logFormat := newLogger(os.Stderr, cfg)
 	slog.SetDefault(appLogger)
 
 	slog.Info("logger initialized",
@@ -66,28 +57,17 @@ func Run() {
 		slog.String("format", logFormat),
 	)
 
-	// Database connection with pool configuration.
-	poolCfg, err := pgxpool.ParseConfig(cfg.Database.URL())
+	pool, err := repository.Connect(context.Background(), cfg.Database.URL(), func(pc *pgxpool.Config) {
+		pc.MaxConns = cfg.Database.Pool.MaxConns
+		pc.MinConns = cfg.Database.Pool.MinConns
+		pc.MaxConnLifetime = cfg.Database.Pool.MaxConnLifetime
+		pc.MaxConnIdleTime = cfg.Database.Pool.MaxConnIdleTime
+	})
 	if err != nil {
-		slog.Error("failed to parse database URL", slog.Any("error", err))
-		os.Exit(1)
-	}
-	poolCfg.MaxConns = cfg.Database.Pool.MaxConns
-	poolCfg.MinConns = cfg.Database.Pool.MinConns
-	poolCfg.MaxConnLifetime = cfg.Database.Pool.MaxConnLifetime
-	poolCfg.MaxConnIdleTime = cfg.Database.Pool.MaxConnIdleTime
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
-	if err != nil {
-		slog.Error("failed to connect to database", slog.Any("error", err))
+		slog.Error("database connection failed", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer pool.Close()
-
-	if err := pool.Ping(context.Background()); err != nil {
-		slog.Error("failed to ping database", slog.Any("error", err))
-		os.Exit(1)
-	}
 	slog.Info("connected to database",
 		slog.Int("maxConns", int(cfg.Database.Pool.MaxConns)),
 		slog.Int("minConns", int(cfg.Database.Pool.MinConns)),
@@ -95,7 +75,6 @@ func Run() {
 		slog.String("maxConnIdleTime", cfg.Database.Pool.MaxConnIdleTime.String()),
 	)
 
-	// Repositories.
 	userRepo := repository.NewUserRepository(pool)
 	sessionRepo := repository.NewSessionRepository(pool)
 	deviceRepo := repository.NewDeviceRepository(pool)
@@ -120,28 +99,22 @@ func Run() {
 	calendarRepo := repository.NewCalendarRepository(pool)
 	trailBookmarkRepo := repository.NewTrailBookmarkRepository(pool)
 
-	// OIDC state repository.
 	oidcStateRepo := repository.NewOIDCStateRepository(pool)
 
-	// Statistics repository.
 	statsRepo := repository.NewStatisticsRepository(pool)
 
-	// Audit logger.
 	auditLogger := audit.NewLogger(pool)
 
-	// Geofence, calendar and notification rule services (shared by OAS handler and AI MCP tools).
 	geofenceService := services.NewGeofenceService(geofenceRepo, auditLogger)
 	calendarService := services.NewCalendarService(calendarRepo, auditLogger)
 	notificationRuleService := services.NewNotificationRuleService(notificationRepo, geofenceRepo, auditLogger)
 
-	// Device registry (used by protocol servers below).
 	deviceRegistry := protocol.NewDeviceRegistry()
 
 	// Command encoders. The WATCH encoder reads each device's connection
 	// session (manufacturer, frame indexing) from the registry.
 	encoderRegistry := protocol.NewEncoderRegistry(deviceRegistry)
 
-	// Notification service (needs to be created before geofence event service).
 	// Command notification rules send device commands through the same path
 	// as POST /api/commands/send (pending queue + immediate delivery).
 	notificationService := services.NewNotificationService(
@@ -161,7 +134,6 @@ func Run() {
 		)
 	}
 
-	// Redis client (shared across pub/sub and rate limiting when enabled).
 	var redisClient *redislib.Client
 	if cfg.Redis.Enabled && cfg.Redis.URL != "" {
 		rc, err := pubsub.NewRedisClient(cfg.Redis.URL)
@@ -182,13 +154,11 @@ func Run() {
 	// WebSocket hub with origin validation and per-user filtering.
 	// Since /api/socket is outside auth middleware, we must parse session cookie manually.
 	hub := websocket.NewHub(cfg.WebSocket.AllowedOrigins, deviceRepo, func(r *http.Request) int64 {
-		// Try context first (in case request went through auth middleware)
 		user := api.UserFromContext(r.Context())
 		if user != nil {
 			return user.ID
 		}
 
-		// Parse session cookie manually (since outside auth middleware)
 		cookie, err := r.Cookie("session_id")
 		if err != nil {
 			return 0
@@ -217,10 +187,7 @@ func Run() {
 		}
 		return user.IsAdmin()
 	})
-	if cfg.Security.Env == "development" {
-		hub.SetDevelopmentMode(true)
-	}
-	// Inject structured logger into components that produce high-value logs.
+	hub.SetDevelopmentMode(cfg.Security.IsDevelopment())
 	wsLogger := appLogger.With(slog.String("component", "websocket"))
 	hub.SetLogger(wsLogger)
 
@@ -229,14 +196,12 @@ func Run() {
 
 	// CSRF secret (loaded early so the passkey challenge-cookie signing key can
 	// be derived from the same shared secret; reused for CSRF below).
-	csrfSecret := loadCSRFSecret(cfg.Security.CSRFSecret, cfg.Security.Env)
+	csrfSecret := loadCSRFSecret(cfg.Security)
 
-	// Passkey (WebAuthn) engine and repository.
 	passkeyRepo := repository.NewPasskeyRepository(pool)
 	webAuthnEngine := buildWebAuthn(cfg.WebAuthn)
 	webAuthnCookieKey := deriveWebAuthnCookieKey(csrfSecret)
 
-	// Unified API handler.
 	handler := handlers.NewHandler(handlers.HandlerConfig{
 		AIEnabled:           cfg.AI.Enabled,
 		Users:               userRepo,
@@ -266,11 +231,9 @@ func Run() {
 		AuditLogger:         auditLogger,
 		UniqueIDPrefix:      cfg.Device.UniqueIDPrefix,
 		OIDCConfig:          cfg.OIDC,
+		Development:         cfg.Security.IsDevelopment(),
 	})
 	secHandler := handlers.NewSecurityHandler(sessionRepo, apiKeyRepo, userRepo)
-
-	// CSRF protection: the 32-byte secret key was loaded above.
-	csrfSecure := cfg.Security.Env != "development"
 
 	// Login rate limiter: Redis-backed (cluster-wide) when Redis is available,
 	// in-process (per-pod only) otherwise.
@@ -281,7 +244,6 @@ func Run() {
 		slog.Warn("Redis enabled but unavailable — login rate limit is per-pod only")
 	}
 
-	// Reverse geocoding (moved up so the AI block can reuse the nominatim instance).
 	var cachedGeocoder *geocoding.CachedGeocoder
 	var forwardGeocoder geocoding.ForwardGeocoder
 	if cfg.Geocoding.Enabled || cfg.AI.Enabled {
@@ -365,7 +327,7 @@ func Run() {
 		ChatHistory:     chatHistoryHandler,
 		CSRFProtect: middleware.CSRF(middleware.CSRFConfig{
 			Secret: csrfSecret,
-			Secure: csrfSecure,
+			Secure: !cfg.Security.IsDevelopment(),
 			ValidateXAuthToken: func(ctx context.Context, token string) bool {
 				s, err := sessionRepo.GetByID(ctx, token)
 				return err == nil && s != nil
@@ -374,28 +336,21 @@ func Run() {
 	}
 	router := api.NewRouter(handler, secHandler, hub, routerCfg)
 
-	// Geofence event detection service.
 	geofenceEventService := services.NewGeofenceEventService(geofenceRepo, eventRepo, positionRepo, calendarRepo, hub, notificationService, svcLogger)
 
-	// Motion detection service.
 	motionService := services.NewMotionService(positionRepo, eventRepo, hub, notificationService, svcLogger)
 
-	// Ignition detection service.
 	ignitionService := services.NewIgnitionService(deviceRepo, eventRepo, hub, notificationService, svcLogger)
 
-	// Alarm detection service (SOS, power cut, vibration, overspeed from H02 flags).
 	alarmService := services.NewAlarmService(eventRepo, hub, notificationService, svcLogger)
 
-	// Mileage tracking service.
 	mileageService := services.NewMileageService(positionRepo, deviceRepo, eventRepo, hub, notificationService, svcLogger)
 
-	// Idle detection service.
 	idleService := services.NewIdleService(deviceRepo, positionRepo, eventRepo, hub, notificationService, mileageService, svcLogger)
 	if cachedGeocoder != nil {
 		idleService.SetGeocoder(cachedGeocoder)
 	}
 
-	// GPS protocol position handler (stores positions and broadcasts via WebSocket).
 	gpsHandler := protocol.NewPositionHandler(positionRepo, deviceRepo, hub, geofenceEventService)
 	gpsHandler.AddCheck("motion", motionService.CheckMotion)
 	gpsHandler.AddCheck("ignition", ignitionService.CheckIgnition)
@@ -406,31 +361,23 @@ func Run() {
 		gpsHandler.SetAddressLookup(cachedGeocoder)
 	}
 
-	// Background context for long-running services and protocol servers.
 	gpsCtx, gpsCancel := context.WithCancel(context.Background())
 
-	// Start Redis subscriber to relay messages from other pods to local clients.
 	go hub.StartSubscriber(gpsCtx)
-	// Start Redis subscriber to invalidate local device-access cache entries on
-	// assignment changes made by other pods.
 	go hub.StartInvalidationSubscriber(gpsCtx)
 
-	// Start geocoding cache cleanup (if enabled).
 	if cachedGeocoder != nil {
 		go cachedGeocoder.StartCleanup(gpsCtx, 5*time.Minute)
 		go cachedGeocoder.StartPrefetch(gpsCtx)
 	}
 
-	// GPS protocol TCP servers.
-
-	// Device auto-creation configuration for GPS protocol servers.
 	autoCreateCfg := protocol.AutoCreateConfig{
 		Enabled:          cfg.Device.AutoCreateDevices,
 		DefaultUserEmail: cfg.Device.AutoCreateDefaultUser,
 	}
 	// In demo pod mode, force auto-create on so the simulator's devices are
 	// registered to the demo user when they first send a position.
-	if cfg.Demo.Enabled && os.Getenv("MOTUS_DEMO_POD") == "true" {
+	if cfg.Demo.Enabled && cfg.Demo.Pod {
 		autoCreateCfg.Enabled = true
 		autoCreateCfg.DefaultUserEmail = "demo@motus.local"
 	}
@@ -470,7 +417,6 @@ func Run() {
 		}
 	}()
 
-	// OsmAnd / Traccar Client HTTP protocol (Android/iOS tracking apps).
 	osmandServer := protocol.NewOsmAndServer(cfg.GPS.OsmAndPort, deviceRepo, gpsHandler)
 	osmandServer.SetAutoCreate(autoCreateCfg, userRepo)
 	osmandServer.SetLogger(protoLogger)
@@ -487,23 +433,17 @@ func Run() {
 	dispatcher.SetLogger(protoLogger.With(slog.String("component", "dispatcher")))
 	go dispatcher.Start(gpsCtx)
 
-	// Device timeout monitor marks devices offline after inactivity.
 	timeoutService := services.NewDeviceTimeoutService(
 		deviceRepo, hub,
 		cfg.Device.Timeout(), cfg.Device.CheckInterval(), svcLogger,
 	)
 	go timeoutService.Start(gpsCtx)
 
-	// Idle detection service runs as a background task.
 	go idleService.Start(gpsCtx)
 
-	// Partition manager for positions table: creates future partitions and
-	// optionally drops expired ones based on retention configuration.
 	partitionMgr := partition.NewManager(pool, cfg.Positions.RetentionDays, 1*time.Hour, appLogger.With(slog.String("component", "partition")))
 	go partitionMgr.Start(gpsCtx)
 
-	// Cleanup service: removes expired sessions and device shares to prevent
-	// unbounded table growth. Runs daily.
 	cleanupService := services.NewCleanupService(pool, 24*time.Hour, svcLogger)
 	go cleanupService.Start(gpsCtx)
 
@@ -513,23 +453,18 @@ func Run() {
 		demo.Enable()
 		slog.Info("demo mode enabled")
 
-		isDemoPod := os.Getenv("MOTUS_DEMO_POD") == "true"
-
-		if isDemoPod {
+		if cfg.Demo.Pod {
 			slog.Info("demo pod mode: seeding data and starting simulator")
 
 			demoService := demo.NewService(pool, cfg.Demo.ResetTime, cfg.Demo.DeviceIMEIs)
 
-			// Seed demo accounts and devices if they don't already exist.
 			if err := demoService.SeedIfNeeded(context.Background()); err != nil {
 				slog.Error("failed to seed demo data", slog.Any("error", err))
 				os.Exit(1)
 			}
 
-			// Start periodic database reset.
 			go demoService.Start(gpsCtx)
 
-			// Load GPX routes and start the GPS simulator.
 			// Give the H02 server a moment to start accepting connections.
 			go func() {
 				time.Sleep(2 * time.Second)
@@ -546,7 +481,6 @@ func Run() {
 					slog.Int("count", len(routes)),
 				)
 
-				// Smooth routes: estimate speeds, interpolate gaps, smooth transitions.
 				for i, r := range routes {
 					routes[i] = demo.SmoothRouteWithInterval(r, cfg.Demo.InterpolationInterval)
 				}
@@ -570,7 +504,6 @@ func Run() {
 		}
 	}
 
-	// Start Prometheus metrics server on a separate port.
 	if cfg.Metrics.Enabled {
 		metricsAddr := fmt.Sprintf(":%s", cfg.Metrics.Port)
 		metricsMux := http.NewServeMux()
@@ -591,7 +524,6 @@ func Run() {
 		}()
 	}
 
-	// HTTP server with graceful shutdown.
 	// WriteTimeout must be 0 because WebSocket connections are long-lived.
 	// A non-zero WriteTimeout sets a deadline on the underlying net.Conn
 	// before the handler runs; after that deadline expires, Go's net/http
@@ -612,7 +544,6 @@ func Run() {
 		}
 	}()
 
-	// Wait for interrupt signal.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -621,7 +552,6 @@ func Run() {
 	// Stop GPS protocol servers first (they have long-lived connections).
 	gpsCancel()
 
-	// Shutdown HTTP server with timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
@@ -631,12 +561,38 @@ func Run() {
 	slog.Info("server stopped")
 }
 
+// newLogger builds the process logger: unknown levels fall back to INFO, and
+// the format defaults to text in development and JSON otherwise.
+func newLogger(w io.Writer, cfg *config.Config) (*slog.Logger, string) {
+	var level slog.Level
+	levelErr := level.UnmarshalText([]byte(strings.TrimSpace(cfg.Log.Level)))
+	if levelErr != nil {
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	format := strings.ToLower(strings.TrimSpace(cfg.Log.Format))
+	if format == "" && cfg.Security.IsDevelopment() {
+		format = "text"
+	}
+	var logger *slog.Logger
+	if format == "text" {
+		logger = slog.New(slog.NewTextHandler(w, opts))
+	} else {
+		format = "json"
+		logger = slog.New(slog.NewJSONHandler(w, opts))
+	}
+	if levelErr != nil {
+		logger.Warn("invalid log level, using INFO", slog.String("level", cfg.Log.Level), slog.Any("error", levelErr))
+	}
+	return logger, format
+}
+
 // loadCSRFSecret returns the 32-byte CSRF secret. In non-development
 // environments config.Validate() already guarantees a non-empty, valid secret,
 // so reaching the empty branch in production is a programming error.
-func loadCSRFSecret(hexSecret, env string) []byte {
-	if hexSecret != "" {
-		secret, err := config.ParseCSRFSecret(hexSecret)
+func loadCSRFSecret(sec config.SecurityConfig) []byte {
+	if sec.CSRFSecret != "" {
+		secret, err := config.ParseCSRFSecret(sec.CSRFSecret)
 		if err != nil {
 			slog.Error("invalid CSRF secret", slog.Any("error", err))
 			os.Exit(1)
@@ -644,12 +600,11 @@ func loadCSRFSecret(hexSecret, env string) []byte {
 		return secret
 	}
 
-	if env != "development" {
+	if !sec.IsDevelopment() {
 		// Should be unreachable: config.Validate() rejects this combination.
 		panic("MOTUS_CSRF_SECRET must be set in non-development environments")
 	}
 
-	// Development only: generate a random 32-byte key per restart.
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		slog.Error("failed to generate CSRF secret", slog.Any("error", err))

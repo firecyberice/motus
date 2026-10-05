@@ -34,6 +34,25 @@ func TestRequireID(t *testing.T) {
 	}
 }
 
+func TestResolveCoords(t *testing.T) {
+	for _, tc := range []struct {
+		args     map[string]any
+		lat, lon float64
+		wantErr  string
+	}{
+		{map[string]any{"latitude": 52.5, "longitude": 13.4}, 52.5, 13.4, ""},
+		{map[string]any{"latitude": "52.5", "longitude": "13.4"}, 52.5, 13.4, ""},
+		{map[string]any{}, 0, 0, "address or latitude/longitude is required"},
+		{map[string]any{"latitude": 52.5}, 0, 0, `required argument "longitude" not found`},
+		{map[string]any{"latitude": "north", "longitude": 13.4}, 0, 0, `argument "latitude" cannot be converted to float64`},
+	} {
+		lat, lon, err := resolveCoords(t.Context(), toolRequest(tc.args), Deps{})
+		if errString(err) != tc.wantErr || lat != tc.lat || lon != tc.lon {
+			t.Errorf("resolveCoords(%v) = %v, %v, %v", tc.args, lat, lon, err)
+		}
+	}
+}
+
 func TestParseRange(t *testing.T) {
 	from, to, err := parseRange(toolRequest(map[string]any{"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}))
 	if err != nil {

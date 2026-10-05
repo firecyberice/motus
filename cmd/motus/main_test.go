@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tamcore/motus/internal/model"
 )
 
@@ -35,7 +36,7 @@ func TestSortDevices(t *testing.T) {
 	for _, tt := range tests {
 		d := make([]model.Device, len(devices))
 		copy(d, devices)
-		sortDevices(d, tt.field)
+		sortList(d, tt.field, deviceSorts)
 		for i, want := range tt.wantIDs {
 			if d[i].ID != want {
 				t.Errorf("sortDevices(%q)[%d]: got ID %d, want %d", tt.field, i, d[i].ID, want)
@@ -73,33 +74,11 @@ func TestSortUsers(t *testing.T) {
 	for _, tt := range tests {
 		u := make([]*model.User, len(users))
 		copy(u, users)
-		sortUsers(u, tt.field)
+		sortList(u, tt.field, userSorts)
 		for i, want := range tt.wantIDs {
 			if u[i].ID != want {
 				t.Errorf("sortUsers(%q)[%d]: got ID %d, want %d", tt.field, i, u[i].ID, want)
 			}
-		}
-	}
-}
-
-// --- truncateID ---
-
-func TestTruncateID(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"", ""},
-		{"short", "short"},
-		{"exactly12ch", "exactly12ch"},
-		{"1234567890AB", "1234567890AB"},     // exactly 12
-		{"1234567890ABC", "1234567890AB..."}, // 13 → truncated
-		{"a-very-long-session-id-12345", "a-very-long-..."},
-	}
-	for _, tt := range tests {
-		got := truncateID(tt.input)
-		if got != tt.want {
-			t.Errorf("truncateID(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
@@ -166,6 +145,31 @@ func TestNewUserCmd(t *testing.T) {
 	}
 }
 
+func TestUserAdd_RejectsInvalidInput(t *testing.T) {
+	origFatal, origConnect := fatalFn, connectDBFn
+	defer func() { fatalFn, connectDBFn = origFatal, origConnect }()
+	connectDBFn = func() (*pgxpool.Pool, error) {
+		t.Fatal("database must not be reached for invalid input")
+		return nil, nil
+	}
+
+	for _, tc := range []struct{ email, password string }{
+		{"not-an-email", "Password1!"},
+		{"ok@example.com", "short"},
+	} {
+		var fatalCalled bool
+		fatalFn = func(msg string, args ...any) { fatalCalled = true }
+		cmd := newUserAddCmd()
+		_ = cmd.Flags().Set("email", tc.email)
+		_ = cmd.Flags().Set("name", "Name")
+		_ = cmd.Flags().Set("password", tc.password)
+		cmd.Run(cmd, nil)
+		if !fatalCalled {
+			t.Errorf("email=%q password=%q: expected rejection", tc.email, tc.password)
+		}
+	}
+}
+
 func TestNewDeviceCmd(t *testing.T) {
 	cmd := newDeviceCmd()
 	if cmd.Use != "device" {
@@ -198,7 +202,7 @@ func TestFilterDevices(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := filterDevices(devices, tt.filter)
+		got := filterList(devices, tt.filter, deviceFilters)
 		if len(got) != len(tt.wantIDs) {
 			t.Errorf("filterDevices(%q): got %d results, want %d", tt.filter, len(got), len(tt.wantIDs))
 			continue
@@ -217,7 +221,7 @@ func TestFilterDevices_BadFormat(t *testing.T) {
 	fatalFn = func(msg string, args ...any) { fatalCalled = true }
 	defer func() { fatalFn = orig }()
 
-	filterDevices([]model.Device{{ID: 1}}, "no-equals-sign")
+	filterList([]model.Device{{ID: 1}}, "no-equals-sign", deviceFilters)
 	if !fatalCalled {
 		t.Error("expected fatalFn to be called for bad filter format")
 	}
@@ -229,7 +233,7 @@ func TestFilterDevices_UnknownField(t *testing.T) {
 	fatalFn = func(msg string, args ...any) { fatalCalled = true }
 	defer func() { fatalFn = orig }()
 
-	filterDevices([]model.Device{{ID: 1, Name: "x"}}, "unknownfield=x")
+	filterList([]model.Device{{ID: 1, Name: "x"}}, "unknownfield=x", deviceFilters)
 	if !fatalCalled {
 		t.Error("expected fatalFn to be called for unknown filter field")
 	}
@@ -257,7 +261,7 @@ func TestFilterUsers(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := filterUsers(users, tt.filter)
+		got := filterList(users, tt.filter, userFilters)
 		if len(got) != len(tt.wantIDs) {
 			t.Errorf("filterUsers(%q): got %d results, want %d", tt.filter, len(got), len(tt.wantIDs))
 			continue
@@ -276,7 +280,7 @@ func TestFilterUsers_BadFormat(t *testing.T) {
 	fatalFn = func(msg string, args ...any) { fatalCalled = true }
 	defer func() { fatalFn = orig }()
 
-	filterUsers([]*model.User{{ID: 1}}, "noequalssign")
+	filterList([]*model.User{{ID: 1}}, "noequalssign", userFilters)
 	if !fatalCalled {
 		t.Error("expected fatalFn to be called for bad filter format")
 	}
@@ -288,7 +292,7 @@ func TestFilterUsers_UnknownField(t *testing.T) {
 	fatalFn = func(msg string, args ...any) { fatalCalled = true }
 	defer func() { fatalFn = orig }()
 
-	filterUsers([]*model.User{{ID: 1, Email: "x@x.com"}}, "unknownfield=x")
+	filterList([]*model.User{{ID: 1, Email: "x@x.com"}}, "unknownfield=x", userFilters)
 	if !fatalCalled {
 		t.Error("expected fatalFn to be called for unknown filter field")
 	}

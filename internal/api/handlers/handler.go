@@ -23,15 +23,15 @@ type HandlerConfig struct {
 	Positions      repository.PositionRepo
 	Commands       repository.CommandRepo
 	Geofences      repository.GeofenceRepo
-	Events         repository.EventRepo
+	Events         *repository.EventRepository
 	Notifications  repository.NotificationRepo
-	Shares         repository.DeviceShareRepo
+	Shares         *repository.DeviceShareRepository
 	ApiKeys        repository.ApiKeyRepo
 	Calendars      repository.CalendarRepo
 	TrailBookmarks repository.TrailBookmarkRepo
 	Stats          repository.StatisticsRepo
 	OIDCStateRepo  repository.OIDCStateRepo
-	Passkeys       repository.PasskeyRepo
+	Passkeys       *repository.PasskeyRepository
 
 	// WebAuthn is the passkey ceremony engine. Nil when passkeys are disabled
 	// or misconfigured; handlers then respond 501.
@@ -54,6 +54,8 @@ type HandlerConfig struct {
 	UniqueIDPrefix string
 	OIDCConfig     config.OIDCConfig
 	AIEnabled      bool
+	// Development drops the Secure flag from cookies so HTTP works on localhost.
+	Development bool
 }
 
 // Handler is the single implementation of oas.Handler.

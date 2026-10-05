@@ -1,12 +1,10 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -15,7 +13,6 @@ import (
 	"github.com/tamcore/motus/internal/model"
 	"github.com/tamcore/motus/internal/storage/repository"
 	"github.com/tamcore/motus/internal/validation"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func newUserCmd() *cobra.Command {
@@ -47,26 +44,30 @@ func newUserAddCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			withDB(func(ctx context.Context, pool *pgxpool.Pool) {
-				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-				if err != nil {
-					fatal("failed to hash password", slog.Any("error", err))
-				}
+			if err := validation.ValidateEmail(email); err != nil {
+				fatalFn("invalid email", slog.Any("error", err))
+				return
+			}
+			if err := validation.ValidateName(name); err != nil {
+				fatalFn("invalid name", slog.Any("error", err))
+				return
+			}
+			hash, err := validation.HashPassword(password)
+			if err != nil {
+				fatalFn("invalid password", slog.Any("error", err))
+				return
+			}
 
-				var userID int64
-				err = pool.QueryRow(ctx, `
-					INSERT INTO users (email, name, password_hash, role, created_at)
-					VALUES ($1, $2, $3, $4, NOW())
-					RETURNING id
-				`, email, name, string(hash), role).Scan(&userID)
-				if err != nil {
+			withDB(func(ctx context.Context, pool *pgxpool.Pool) {
+				u := &model.User{Email: email, Name: name, PasswordHash: hash, Role: role}
+				if err := repository.NewUserRepository(pool).Create(ctx, u); err != nil {
 					if strings.Contains(err.Error(), "duplicate key") {
 						fatal("user already exists", slog.String("email", email))
 					}
 					fatal("failed to create user", slog.Any("error", err))
 				}
 
-				fmt.Printf("Created user: id=%d, email=%s, name=%s, role=%s\n", userID, email, name, role)
+				fmt.Printf("Created user: id=%d, email=%s, name=%s, role=%s\n", u.ID, u.Email, u.Name, u.Role)
 			})
 		},
 	}
@@ -102,14 +103,14 @@ func newUserListCmd() *cobra.Command {
 				}
 
 				if filter != "" {
-					users = filterUsers(users, filter)
+					users = filterList(users, filter, userFilters)
 					if len(users) == 0 {
 						fmt.Println("No users match the filter.")
 						return
 					}
 				}
 
-				sortUsers(users, sortField)
+				sortList(users, sortField, userSorts)
 
 				items := make([]map[string]any, len(users))
 				rows := make([][]string, len(users))
@@ -242,7 +243,8 @@ func newUserSetPasswordCmd() *cobra.Command {
 		Use:   "set-password",
 		Short: "Reset a user's password",
 		Run: func(cmd *cobra.Command, args []string) {
-			if err := validation.ValidatePassword(password); err != nil {
+			hash, err := validation.HashPassword(password)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -254,12 +256,7 @@ func newUserSetPasswordCmd() *cobra.Command {
 					fatal("user not found", slog.String("email", email))
 				}
 
-				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-				if err != nil {
-					fatal("failed to hash password", slog.Any("error", err))
-				}
-
-				if err := userRepo.UpdatePassword(ctx, u.ID, string(hash)); err != nil {
+				if err := userRepo.UpdatePassword(ctx, u.ID, hash); err != nil {
 					fatal("failed to update password", slog.Any("error", err))
 				}
 
@@ -277,42 +274,16 @@ func newUserSetPasswordCmd() *cobra.Command {
 	return cmd
 }
 
-// filterUsers returns users matching the given field=value filter.
-func filterUsers(users []*model.User, filter string) []*model.User {
-	field, value, ok := strings.Cut(filter, "=")
-	if !ok {
-		fatalFn("invalid filter format (expected field=value)", slog.String("filter", filter))
-		return nil
-	}
-	field, value = strings.ToLower(field), strings.ToLower(value)
-
-	var keep func(*model.User) bool
-	switch field {
-	case "role":
-		keep = func(u *model.User) bool { return strings.ToLower(u.Role) == value }
-	case "email":
-		keep = func(u *model.User) bool { return strings.Contains(strings.ToLower(u.Email), value) }
-	case "name":
-		keep = func(u *model.User) bool { return strings.Contains(strings.ToLower(u.Name), value) }
-	default:
-		fatalFn("unknown filter field (supported: role, email, name)", slog.String("field", field))
-		return nil
-	}
-	return slices.DeleteFunc(slices.Clone(users), func(u *model.User) bool { return !keep(u) })
+var userFilters = map[string]listFilter[*model.User]{
+	"role":  {exact: true, get: func(u *model.User) string { return u.Role }},
+	"email": {get: func(u *model.User) string { return u.Email }},
+	"name":  {get: func(u *model.User) string { return u.Name }},
 }
 
-// sortUsers sorts users in-place by the given field.
-func sortUsers(users []*model.User, field string) {
-	switch strings.ToLower(field) {
-	case "email":
-		slices.SortFunc(users, func(a, b *model.User) int { return cmp.Compare(a.Email, b.Email) })
-	case "name":
-		slices.SortFunc(users, func(a, b *model.User) int { return cmp.Compare(a.Name, b.Name) })
-	case "role":
-		slices.SortFunc(users, func(a, b *model.User) int { return cmp.Compare(a.Role, b.Role) })
-	case "created":
-		slices.SortFunc(users, func(a, b *model.User) int { return a.CreatedAt.Compare(b.CreatedAt) })
-	default:
-		slices.SortFunc(users, func(a, b *model.User) int { return cmp.Compare(a.ID, b.ID) })
-	}
+var userSorts = map[string]func(a, b *model.User) int{
+	"id":      by(func(u *model.User) int64 { return u.ID }),
+	"email":   by(func(u *model.User) string { return u.Email }),
+	"name":    by(func(u *model.User) string { return u.Name }),
+	"role":    by(func(u *model.User) string { return u.Role }),
+	"created": func(a, b *model.User) int { return a.CreatedAt.Compare(b.CreatedAt) },
 }
