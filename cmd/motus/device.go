@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -29,15 +28,13 @@ func newDeviceCmd() *cobra.Command {
 	return cmd
 }
 
-// defaultDeviceOwner is the fallback owner of CLI-created devices, matching
-// the default of MOTUS_DEVICE_AUTO_CREATE_USER.
-const defaultDeviceOwner = "admin@motus.local"
-
 // deviceOwnerEmail returns the email of the user a new device is assigned
-// to: the --user flag, else MOTUS_DEVICE_AUTO_CREATE_USER (the owner of
-// auto-created GPS devices), else admin@motus.local.
+// to: the --user flag, else the owner of auto-created GPS devices.
 func deviceOwnerEmail(flag string) string {
-	return cmp.Or(flag, os.Getenv("MOTUS_DEVICE_AUTO_CREATE_USER"), defaultDeviceOwner)
+	if flag != "" {
+		return flag
+	}
+	return loadConfig().Device.AutoCreateDefaultUser
 }
 
 func newDeviceAddCmd() *cobra.Command {
@@ -82,7 +79,7 @@ func newDeviceAddCmd() *cobra.Command {
 	f.StringVar(&name, "name", "", "Device display name")
 	f.StringVar(&protocol, "protocol", "h02", "Device protocol: h02, watch")
 	f.StringVar(&userEmail, "user", "", "Email of the user to assign the device to "+
-		"(default: $MOTUS_DEVICE_AUTO_CREATE_USER or "+defaultDeviceOwner+")")
+		"(default: $MOTUS_DEVICE_AUTO_CREATE_USER or admin@motus.local)")
 	_ = cmd.MarkFlagRequired("unique-id")
 	_ = cmd.MarkFlagRequired("name")
 
@@ -117,7 +114,6 @@ func newDeviceListCmd() *cobra.Command {
 
 				sortList(devices, sortField, deviceSorts)
 
-				isCSV := output == "csv"
 				items := make([]map[string]any, len(devices))
 				rows := make([][]string, len(devices))
 				for i, d := range devices {
@@ -129,23 +125,14 @@ func newDeviceListCmd() *cobra.Command {
 						"status":   d.Status,
 					}
 					lastUpdate := "-"
-					if isCSV {
-						lastUpdate = ""
-					}
 					if d.LastUpdate != nil {
 						item["lastUpdate"] = d.LastUpdate.Format(time.RFC3339)
 						lastUpdate = d.LastUpdate.Format("2006-01-02 15:04")
-						if isCSV {
-							lastUpdate = d.LastUpdate.Format("2006-01-02 15:04:05")
-						}
 					}
 					items[i] = item
 					rows[i] = []string{fmt.Sprint(d.ID), d.UniqueID, d.Name, d.Protocol, d.Status, lastUpdate}
 				}
 				headers := []string{"ID", "UNIQUE ID", "NAME", "PROTOCOL", "STATUS", "LAST UPDATE"}
-				if isCSV {
-					headers = []string{"ID", "UniqueID", "Name", "Protocol", "Status", "LastUpdate"}
-				}
 				render(output, items, headers, rows)
 			})
 		},

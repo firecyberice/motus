@@ -82,14 +82,9 @@ var connectDBFn = connectDB
 
 // connectDB opens a pgxpool connection using environment configuration.
 func connectDB() (*pgxpool.Pool, error) {
-	cfg, err := config.LoadFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return repository.Connect(ctx, cfg.Database.URL())
+	return repository.Connect(ctx, dbURLOrConfig(""))
 }
 
 // dbURLOrConfig returns flagURL, or the database URL from the environment config.
@@ -97,11 +92,16 @@ func dbURLOrConfig(flagURL string) string {
 	if flagURL != "" {
 		return flagURL
 	}
+	return loadConfig().Database.URL()
+}
+
+// loadConfig loads the environment configuration, exiting on error.
+func loadConfig() *config.Config {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		fatal("failed to load config", slog.Any("error", err))
 	}
-	return cfg.Database.URL()
+	return cfg
 }
 
 // withDB runs fn with a connected pool and a 10s context, exiting on connection failure.

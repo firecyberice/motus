@@ -8,9 +8,10 @@ A production-ready GPS tracking system with real-time updates, geofencing, notif
 
 - **GPS Tracking** — H02, WATCH and OsmAnd / Traccar Client (Android/iOS) protocol support, real-time WebSocket updates, device status monitoring
 - **Geofencing** — Draw polygons/rectangles/circles on a map, real-time enter/exit detection via PostGIS
-- **Notifications** — Webhook delivery with template variables, or a device command sent to the triggering device (e.g. set the reporting interval when a pet leaves or returns home); event types: geofence (optionally limited to selected geofences), online/offline, overspeed, motion, idle
+- **Notifications** — Webhook delivery with template variables, or a device command sent to the triggering device (e.g. set the reporting interval when a pet leaves or returns home); event types: geofence (optionally limited to selected geofences), online/offline, motion, idle, ignition on/off, device alarms (e.g. overspeed, SOS), trip completed
 - **Reports** — Trip detection, route playback with animation, heatmaps, distance charts, CSV/GPX export
 - **Trail Bookmarks** — Save a device trail time range as a named bookmark (e.g. a hike) with an optional description, and reopen it on the map or from the Bookmarks page
+- **QR Login** — A new API key in Settings shows a QR code with the server URL and token; scan it with Traccar Manager to connect and log in
 - **Security** — Session cookies + Bearer tokens, RBAC (admin/user/readonly), CSRF protection, audit logging
 - **UI** — Dark/light themes, mobile responsive, metric/imperial units, timezone preferences
 - **AI Assistant** — Natural-language control of geofences, calendars, notifications, and device queries via any OpenAI-compatible API (opt-in, requires API key). See [docs/ai-assistant.md](docs/ai-assistant.md).
@@ -66,7 +67,7 @@ All configuration is via environment variables.
 | `MOTUS_ENV` | `production` | `production` or `development` (affects cookie security) |
 | `MOTUS_TRUSTED_PROXIES` | loopback + private ranges | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` / `X-Real-Ip` set the client IP (rate limits, audit log). Set it to your proxy's address when motus is reachable from a private network without one |
 | `MOTUS_LOGIN_RATE_LIMIT` | `5` | Login attempts per minute per IP |
-| `MOTUS_API_RATE_LIMIT` | `60` | API requests per minute per IP |
+| `MOTUS_API_RATE_LIMIT` | `100` | API requests per minute per IP |
 | `MOTUS_DEMO_ENABLED` | `false` | Enable demo mode with simulated GPS tracks |
 | `MOTUS_DEMO_DEVICE_IMEIS` | — | Comma-separated demo device identifiers |
 | `MOTUS_AI_ENABLED` | `false` | Enable the AI assistant chat feature. See [docs/ai-assistant.md](docs/ai-assistant.md) for the full `MOTUS_AI_*` configuration reference. |

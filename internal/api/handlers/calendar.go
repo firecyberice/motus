@@ -76,7 +76,7 @@ func (h *Handler) DeleteCalendar(ctx context.Context, params oas.DeleteCalendarP
 	}
 	h.cfg.AuditLogger.Log(ctx, &user.ID,
 		audit.ActionCalendarDelete, audit.ResourceCalendar, &params.ID,
-		nil, "", "")
+		nil)
 	return &oas.DeleteCalendarNoContent{}, nil
 }
 
@@ -103,6 +103,18 @@ func (h *Handler) CheckCalendar(ctx context.Context, params oas.CheckCalendarPar
 	return &oas.CalendarCheckResult{
 		Active: active,
 	}, nil
+}
+
+// CheckCalendarData tests if the current time matches unsaved iCalendar data.
+func (h *Handler) CheckCalendarData(ctx context.Context, req *oas.CalendarCheckInput) (oas.CheckCalendarDataRes, error) {
+	if api.UserFromContext(ctx) == nil {
+		return &oas.CheckCalendarDataUnauthorized{Error: "unauthorized"}, nil
+	}
+	active, err := calendar.IsActiveAt(req.Data, time.Now().UTC())
+	if err != nil {
+		return &oas.CheckCalendarDataBadRequest{Error: "invalid calendar data"}, nil
+	}
+	return &oas.CalendarCheckResult{Active: active}, nil
 }
 
 // AdminListCalendars returns all calendars in the system (admin only).

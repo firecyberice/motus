@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
+	import { createEventDispatcher, onDestroy } from 'svelte';
+	import { api } from '$lib/api/client';
 	import Modal from './Modal.svelte';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
@@ -8,7 +9,6 @@
 	import {
 		CALENDAR_TEMPLATES,
 		getScheduleSummary,
-		getActiveStatus,
 		validateIcalData,
 		validateDateRangeConfig,
 		buildDateRangeIcal,
@@ -42,25 +42,15 @@
 	// --- Visual Builder mode state ---
 	let startDate = '';
 	let endDate = '';
-	let startHour = 8;
-	let startMinute = 0;
-	let endHour = 17;
-	let endMinute = 0;
+	let startTime = '08:00';
+	let endTime = '17:00';
 	let recurrence: RecurrenceType = 'weekly';
 	let weeklyDays: boolean[] = [false, true, true, true, true, true, false];
 
 	// --- Advanced mode state ---
 	let icalData = '';
 
-	// --- Existing visual builder state (day+time only, no date range) ---
-	let selectedDays: boolean[] = [false, true, true, true, true, true, false];
-	let builderStartHour = 8;
-	let builderStartMinute = 0;
-	let builderEndHour = 17;
-	let builderEndMinute = 0;
-
 	const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-	const ICAL_DAY_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
 	$: isEditing = calendar !== null;
 	$: modalTitle = isEditing ? 'Edit Calendar' : 'Create Calendar';
@@ -68,10 +58,38 @@
 	// Compute today's date for min validation
 	$: todayStr = dateValue(new Date());
 
+	$: [startHour, startMinute] = (startTime || '00:00').split(':').map(Number);
+	$: [endHour, endMinute] = (endTime || '00:00').split(':').map(Number);
+
 	// Compute preview data based on active mode
 	$: previewData = computePreviewData(activeMode, selectedTemplate, icalData, startDate, endDate, startHour, startMinute, endHour, endMinute, recurrence, weeklyDays);
 	$: scheduleSummary = getScheduleSummary(previewData);
-	$: activeStatus = getActiveStatus(previewData);
+	$: if (open) checkPreviewStatus(previewData);
+
+	const PREVIEW_CHECK_DELAY_MS = 300;
+	let activeStatus = { active: false, label: '' };
+	let previewTimer: ReturnType<typeof setTimeout> | undefined;
+	let previewSeq = 0;
+	onDestroy(() => clearTimeout(previewTimer));
+
+	function checkPreviewStatus(data: string) {
+		clearTimeout(previewTimer);
+		const seq = ++previewSeq;
+		if (!data.trim()) {
+			activeStatus = { active: false, label: 'No schedule' };
+			return;
+		}
+		previewTimer = setTimeout(async () => {
+			let next = { active: false, label: 'Unknown' };
+			try {
+				const { active } = await api.checkCalendarData(data);
+				next = { active, label: active ? 'Active now' : 'Inactive' };
+			} catch {
+				// Invalid or partial input while typing; keep the neutral label.
+			}
+			if (seq === previewSeq) activeStatus = next;
+		}, PREVIEW_CHECK_DELAY_MS);
+	}
 
 	// Compute visual builder validation error
 	$: visualBuilderError = activeMode === 'visual' ? computeVisualBuilderError() : '';
@@ -139,10 +157,8 @@
 			if (parsed) {
 				startDate = parsed.startDate;
 				endDate = parsed.endDate;
-				startHour = parsed.startHour;
-				startMinute = parsed.startMinute;
-				endHour = parsed.endHour;
-				endMinute = parsed.endMinute;
+				startTime = `${pad2(parsed.startHour)}:${pad2(parsed.startMinute)}`;
+				endTime = `${pad2(parsed.endHour)}:${pad2(parsed.endMinute)}`;
 				recurrence = parsed.recurrence;
 				weeklyDays = [...parsed.weeklyDays];
 				activeMode = 'visual';
@@ -151,9 +167,6 @@
 			}
 
 			selectedTemplate = 'custom';
-
-			// Also parse for the old visual builder fields
-			parseIcalToOldVisual(calendar.data);
 		} else {
 			name = '';
 			icalData = '';
@@ -167,44 +180,10 @@
 
 			startDate = dateValue(today);
 			endDate = dateValue(thirtyDaysOut);
-			startHour = 8;
-			startMinute = 0;
-			endHour = 17;
-			endMinute = 0;
+			startTime = '08:00';
+			endTime = '17:00';
 			recurrence = 'weekly';
 			weeklyDays = [false, true, true, true, true, true, false];
-
-			// Old visual builder defaults
-			selectedDays = [false, true, true, true, true, true, false];
-			builderStartHour = 8;
-			builderStartMinute = 0;
-			builderEndHour = 17;
-			builderEndMinute = 0;
-		}
-	}
-
-	function parseIcalToOldVisual(data: string) {
-		if (!data) return;
-		try {
-			const bydayMatch = data.match(/BYDAY=([A-Z,]+)/);
-			if (bydayMatch) {
-				const days = bydayMatch[1].split(',');
-				selectedDays = ICAL_DAY_CODES.map((code) => days.includes(code));
-			} else if (data.includes('FREQ=DAILY')) {
-				selectedDays = [true, true, true, true, true, true, true];
-			}
-			const startMatch = data.match(/DTSTART[^:]*:(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
-			if (startMatch) {
-				builderStartHour = parseInt(startMatch[4]);
-				builderStartMinute = parseInt(startMatch[5]);
-			}
-			const endMatch = data.match(/DTEND[^:]*:(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
-			if (endMatch) {
-				builderEndHour = parseInt(endMatch[4]);
-				builderEndMinute = parseInt(endMatch[5]);
-			}
-		} catch {
-			// If parsing fails, keep defaults
 		}
 	}
 
@@ -280,12 +259,6 @@
 	function handleClose() {
 		open = false;
 		dispatch('close');
-	}
-
-	function formatHourOption(h: number): string {
-		const ampm = h >= 12 ? 'PM' : 'AM';
-		const display = h % 12 || 12;
-		return `${display} ${ampm}`;
 	}
 
 	function toggleWeeklyDay(index: number) {
@@ -446,37 +419,19 @@
 					<div class="builder-section">
 						<span class="builder-label">Time Range</span>
 						<div class="time-range">
-							<div class="time-picker">
-								<label for="visual-start-hour" class="sr-only">Start hour</label>
-								<select id="visual-start-hour" bind:value={startHour} class="time-select field-sm field-full">
-									{#each Array(24) as _, h}
-										<option value={h}>{formatHourOption(h)}</option>
-									{/each}
-								</select>
-								<span class="time-sep">:</span>
-								<label for="visual-start-min" class="sr-only">Start minute</label>
-								<select id="visual-start-min" bind:value={startMinute} class="time-select field-sm field-full time-select-min">
-									{#each Array.from({length: 60}, (_, i) => i) as m}
-										<option value={m}>{pad2(m)}</option>
-									{/each}
-								</select>
-							</div>
+							<input
+								type="time"
+								class="time-input field-sm"
+								aria-label="Start time"
+								bind:value={startTime}
+							/>
 							<span class="time-to">to</span>
-							<div class="time-picker">
-								<label for="visual-end-hour" class="sr-only">End hour</label>
-								<select id="visual-end-hour" bind:value={endHour} class="time-select field-sm field-full">
-									{#each Array(24) as _, h}
-										<option value={h}>{formatHourOption(h)}</option>
-									{/each}
-								</select>
-								<span class="time-sep">:</span>
-								<label for="visual-end-min" class="sr-only">End minute</label>
-								<select id="visual-end-min" bind:value={endMinute} class="time-select field-sm field-full time-select-min">
-									{#each Array.from({length: 60}, (_, i) => i) as m}
-										<option value={m}>{pad2(m)}</option>
-									{/each}
-								</select>
-							</div>
+							<input
+								type="time"
+								class="time-input field-sm"
+								aria-label="End time"
+								bind:value={endTime}
+							/>
 						</div>
 					</div>
 
@@ -593,10 +548,12 @@
 						</svg>
 						<span>{scheduleSummary}</span>
 					</div>
-					<div class="preview-status" class:active={activeStatus.active}>
-						<span class="status-dot"></span>
-						<span>{activeStatus.label}</span>
-					</div>
+					{#if activeStatus.label}
+						<div class="preview-status" class:active={activeStatus.active}>
+							<span class="status-dot"></span>
+							<span>{activeStatus.label}</span>
+						</div>
+					{/if}
 				</div>
 			</div>
 		{/if}
@@ -877,23 +834,8 @@
 		flex-wrap: wrap;
 	}
 
-	.time-picker {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-	}
-
-	.time-select {
+	.time-input {
 		background-color: var(--bg-tertiary);
-	}
-
-	.time-select-min {
-		min-width: 60px;
-	}
-
-	.time-sep {
-		color: var(--text-secondary);
-		font-weight: var(--font-bold);
 	}
 
 	.time-to {
@@ -976,18 +918,6 @@
 
 	.preview-status.active {
 		color: var(--status-online);
-	}
-
-	/* Accessibility */
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		border: 0;
 	}
 
 	@media (max-width: 480px) {

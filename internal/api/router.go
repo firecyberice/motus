@@ -5,13 +5,13 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/gorilla/csrf"
 	"github.com/tamcore/motus/docs"
 	oas "github.com/tamcore/motus/internal/api/oas"
+	"github.com/tamcore/motus/internal/audit"
 	"github.com/tamcore/motus/internal/metrics"
 	"github.com/tamcore/motus/internal/version"
 	"github.com/tamcore/motus/internal/websocket"
@@ -21,13 +21,6 @@ import (
 // maxRequestBodySize is the maximum allowed request body size (16 MB).
 // Set to 16 MB to accommodate GPX file imports; all JSON endpoints use far less.
 const maxRequestBodySize = 16 << 20
-
-func limitRequestBody(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-		next.ServeHTTP(w, r)
-	})
-}
 
 // RouterConfig holds optional middleware for the router.
 type RouterConfig struct {
@@ -128,7 +121,8 @@ func NewRouter(h oas.Handler, sec oas.SecurityHandler, hub *websocket.Hub, cfg R
 	if cfg.RealIP != nil {
 		r.Use(cfg.RealIP)
 	}
-	r.Use(limitRequestBody)
+	r.Use(audit.Middleware)
+	r.Use(chimw.RequestSize(maxRequestBodySize))
 	if cfg.SecurityHeaders != nil {
 		r.Use(cfg.SecurityHeaders)
 	}
@@ -163,7 +157,6 @@ func NewRouter(h oas.Handler, sec oas.SecurityHandler, hub *websocket.Hub, cfg R
 		if cfg.Auth != nil {
 			chatHandler = cfg.Auth(chatHandler)
 		}
-		chatHandler = injectHTTP(chatHandler)
 		r.Post("/api/chat", chatHandler.ServeHTTP)
 	}
 
@@ -173,7 +166,6 @@ func NewRouter(h oas.Handler, sec oas.SecurityHandler, hub *websocket.Hub, cfg R
 		if cfg.Auth != nil {
 			histHandler = cfg.Auth(histHandler)
 		}
-		histHandler = injectHTTP(histHandler)
 		r.Get("/api/chat/history", histHandler.ServeHTTP)
 		r.Delete("/api/chat/history", histHandler.ServeHTTP)
 	}
@@ -226,6 +218,10 @@ func NewRouter(h oas.Handler, sec oas.SecurityHandler, hub *websocket.Hub, cfg R
 	if err2 == nil {
 		if entries, _ := fs.ReadDir(webFS, "."); len(entries) > 1 || (len(entries) == 1 && entries[0].Name() != ".gitkeep") {
 			indexHTML, _ := fs.ReadFile(webFS, "index.html")
+			var swJS []byte
+			if raw, err := fs.ReadFile(webFS, "sw.js"); err == nil {
+				swJS = bytes.ReplaceAll(raw, []byte("__CACHE_VERSION__"), []byte(version.Version))
+			}
 			fileServer := http.FileServerFS(webFS)
 			r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/api") {
@@ -233,12 +229,10 @@ func NewRouter(h oas.Handler, sec oas.SecurityHandler, hub *websocket.Hub, cfg R
 					return
 				}
 				cleanPath := strings.TrimPrefix(r.URL.Path, "/")
-				if cleanPath == "sw.js" {
-					if body, ok := versionedSW(webFS); ok {
-						w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-						_, _ = w.Write(body)
-						return
-					}
+				if cleanPath == "sw.js" && swJS != nil {
+					w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+					_, _ = w.Write(swJS)
+					return
 				}
 				for _, p := range []string{cleanPath, cleanPath + ".html", cleanPath + "/index.html"} {
 					if _, err := fs.Stat(webFS, p); err == nil && cleanPath != "" {
@@ -258,20 +252,4 @@ func NewRouter(h oas.Handler, sec oas.SecurityHandler, hub *websocket.Hub, cfg R
 	}
 
 	return r
-}
-
-var (
-	swOnce  sync.Once
-	swBytes []byte
-)
-
-func versionedSW(webFS fs.FS) ([]byte, bool) {
-	swOnce.Do(func() {
-		raw, err := fs.ReadFile(webFS, "sw.js")
-		if err != nil {
-			return
-		}
-		swBytes = bytes.ReplaceAll(raw, []byte("__CACHE_VERSION__"), []byte(version.Version))
-	})
-	return swBytes, len(swBytes) > 0
 }

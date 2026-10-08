@@ -117,14 +117,14 @@ func Run() {
 
 	// Command notification rules send device commands through the same path
 	// as POST /api/commands/send (pending queue + immediate delivery).
+	commandSubmitter := &protocol.CommandSubmitter{
+		Commands: commandRepo,
+		Encoders: encoderRegistry,
+		Registry: deviceRegistry,
+	}
 	notificationService := services.NewNotificationService(
 		notificationRepo, deviceRepo, geofenceRepo, positionRepo,
-		&protocol.CommandSubmitter{
-			Commands: commandRepo,
-			Encoders: encoderRegistry,
-			Registry: deviceRegistry,
-		},
-		auditLogger,
+		commandSubmitter, auditLogger,
 	)
 
 	if cfg.OIDC.Enabled {
@@ -154,11 +154,6 @@ func Run() {
 	// WebSocket hub with origin validation and per-user filtering.
 	// Since /api/socket is outside auth middleware, we must parse session cookie manually.
 	hub := websocket.NewHub(cfg.WebSocket.AllowedOrigins, deviceRepo, func(r *http.Request) int64 {
-		user := api.UserFromContext(r.Context())
-		if user != nil {
-			return user.ID
-		}
-
 		cookie, err := r.Cookie("session_id")
 		if err != nil {
 			return 0
@@ -225,7 +220,7 @@ func Run() {
 		NotificationRules:   notificationRuleService,
 		GeofenceService:     geofenceService,
 		CalendarService:     calendarService,
-		DeviceRegistry:      deviceRegistry,
+		CommandSubmitter:    commandSubmitter,
 		EncoderRegistry:     encoderRegistry,
 		Hub:                 hub,
 		AuditLogger:         auditLogger,
@@ -237,15 +232,16 @@ func Run() {
 
 	// Login rate limiter: Redis-backed (cluster-wide) when Redis is available,
 	// in-process (per-pod only) otherwise.
-	loginRateLimit := middleware.RateLimit(middleware.DefaultLoginRateLimit())
+	loginRateCfg := middleware.RateLimitConfig{Max: cfg.Security.LoginRateLimit, Period: time.Minute}
+	loginRateLimit := middleware.RateLimit(loginRateCfg)
 	if redisClient != nil {
-		loginRateLimit = middleware.NewRedisLoginRateLimit(redisClient, middleware.DefaultLoginRateLimit())
+		loginRateLimit = middleware.NewRedisLoginRateLimit(redisClient, loginRateCfg)
 	} else if cfg.Redis.Enabled {
 		slog.Warn("Redis enabled but unavailable — login rate limit is per-pod only")
 	}
 
 	var cachedGeocoder *geocoding.CachedGeocoder
-	var forwardGeocoder geocoding.ForwardGeocoder
+	var forwardGeocoder *geocoding.NominatimGeocoder
 	if cfg.Geocoding.Enabled || cfg.AI.Enabled {
 		geocodeLogger := appLogger.With(slog.String("component", "geocoding"))
 		var geocodeLimiter geocoding.Limiter
@@ -318,7 +314,7 @@ func Run() {
 	routerCfg := api.RouterConfig{
 		RealIP:          middleware.RealIP(trustedProxies),
 		LoginRateLimit:  loginRateLimit,
-		APIRateLimit:    middleware.RateLimit(middleware.DefaultAPIRateLimit()),
+		APIRateLimit:    middleware.RateLimit(middleware.RateLimitConfig{Max: cfg.Security.APIRateLimit, Period: time.Minute}),
 		SecurityHeaders: middleware.SecurityHeaders,
 		Auth:            middleware.LoadAuthContext(userRepo, sessionRepo, apiKeyRepo),
 		WriteAccess:     middleware.RequireWriteAccess,
@@ -482,10 +478,8 @@ func Run() {
 				)
 
 				for i, r := range routes {
-					routes[i] = demo.SmoothRouteWithInterval(r, cfg.Demo.InterpolationInterval)
-				}
-
-				for _, r := range routes {
+					r = demo.SmoothRouteWithInterval(r, cfg.Demo.InterpolationInterval)
+					routes[i] = r
 					slog.Debug("demo route loaded",
 						slog.String("name", r.Name),
 						slog.Int("points", len(r.Points)),
@@ -606,10 +600,7 @@ func loadCSRFSecret(sec config.SecurityConfig) []byte {
 	}
 
 	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		slog.Error("failed to generate CSRF secret", slog.Any("error", err))
-		os.Exit(1)
-	}
+	_, _ = rand.Read(secret)
 	slog.Warn("no MOTUS_CSRF_SECRET set, using random key (tokens will not survive restarts)")
 	return secret
 }

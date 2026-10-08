@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"time"
 
@@ -118,18 +119,31 @@ type Entry struct {
 
 // Logger provides audit logging backed by a PostgreSQL table.
 type Logger struct {
-	pool   *pgxpool.Pool
-	logger *slog.Logger
+	pool *pgxpool.Pool
 }
 
 // NewLogger creates a new audit logger.
 func NewLogger(pool *pgxpool.Pool) *Logger {
-	return &Logger{pool: pool, logger: slog.Default()}
+	return &Logger{pool: pool}
 }
 
-// Log records an audit event. Errors are logged but never returned to
-// callers, because audit logging must not break application flow.
-func (l *Logger) Log(ctx context.Context, userID *int64, action, resourceType string, resourceID *int64, details map[string]any, ip, userAgent string) {
+type requestMetaKey struct{}
+
+type requestMeta struct{ ip, userAgent string }
+
+// Middleware stores the client IP and User-Agent in the request context so
+// Log records them.
+func Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), requestMetaKey{}, requestMeta{ip: ExtractIP(r), userAgent: r.UserAgent()})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// Log records an audit event, with the client IP and User-Agent stored by
+// Middleware. Errors are logged but never returned to callers, because audit
+// logging must not break application flow.
+func (l *Logger) Log(ctx context.Context, userID *int64, action, resourceType string, resourceID *int64, details map[string]any) {
 	if l == nil || l.pool == nil {
 		return
 	}
@@ -139,7 +153,7 @@ func (l *Logger) Log(ctx context.Context, userID *int64, action, resourceType st
 		var err error
 		detailsJSON, err = json.Marshal(details)
 		if err != nil {
-			l.logger.Warn("failed to marshal audit details",
+			slog.Warn("failed to marshal audit details",
 				slog.String("action", action),
 				slog.Any("error", err),
 			)
@@ -147,31 +161,18 @@ func (l *Logger) Log(ctx context.Context, userID *int64, action, resourceType st
 		}
 	}
 
-	var resType *string
-	if resourceType != "" {
-		resType = &resourceType
-	}
-
-	var ipAddr *string
-	if ip != "" {
-		// Validate the IP to avoid INET parse errors.
-		if parsed := net.ParseIP(ip); parsed != nil {
-			ipStr := parsed.String()
-			ipAddr = &ipStr
-		}
-	}
-
-	var ua *string
-	if userAgent != "" {
-		ua = &userAgent
+	meta, _ := ctx.Value(requestMetaKey{}).(requestMeta)
+	var ip string
+	if parsed := net.ParseIP(meta.ip); parsed != nil {
+		ip = parsed.String()
 	}
 
 	_, err := l.pool.Exec(ctx, `
 		INSERT INTO audit_log (user_id, action, resource_type, resource_id, details, ip_address, user_agent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, userID, action, resType, resourceID, detailsJSON, ipAddr, ua)
+		VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, '')::inet, NULLIF($7, ''))
+	`, userID, action, resourceType, resourceID, detailsJSON, ip, meta.userAgent)
 	if err != nil {
-		l.logger.Error("failed to write audit log",
+		slog.Error("failed to write audit log",
 			slog.String("action", action),
 			slog.Any("error", err),
 		)
@@ -197,7 +198,7 @@ func (l *Logger) Log(ctx context.Context, userID *int64, action, resourceType st
 	if details != nil {
 		attrs = append(attrs, slog.Any("details", details))
 	}
-	l.logger.LogAttrs(ctx, slog.LevelInfo, "audit", attrs...)
+	slog.LogAttrs(ctx, slog.LevelInfo, "audit", attrs...)
 }
 
 // Query retrieves audit log entries with optional filtering.
@@ -266,12 +267,21 @@ func (l *Logger) Query(ctx context.Context, params QueryParams) ([]Entry, int64,
 	return entries, total, nil
 }
 
-// ExtractIP returns the client IP from a request. Chi's RealIP middleware
-// rewrites RemoteAddr to the real IP, so we only need to strip the port.
+// ExtractIP returns the client IP from a request, or RemoteAddr unchanged if
+// it does not parse. The RealIP middleware has already rewritten RemoteAddr.
 func ExtractIP(r *http.Request) string {
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	if ip, ok := ParseRemoteAddr(r.RemoteAddr); ok {
+		return ip.String()
 	}
-	return ip
+	return r.RemoteAddr
+}
+
+// ParseRemoteAddr parses an "ip:port" or bare IP address, unmapping
+// IPv4-mapped IPv6 addresses.
+func ParseRemoteAddr(remoteAddr string) (netip.Addr, bool) {
+	if ap, err := netip.ParseAddrPort(remoteAddr); err == nil {
+		return ap.Addr().Unmap(), true
+	}
+	ip, err := netip.ParseAddr(remoteAddr)
+	return ip.Unmap(), err == nil
 }

@@ -125,7 +125,6 @@ func (m *mockUserRepo) GenerateToken(ctx context.Context, userID int64) (string,
 
 // mockSessionRepo is a mock implementation of repository.SessionRepo.
 type mockSessionRepo struct {
-	createFn           func(ctx context.Context, userID int64) (*model.Session, error)
 	createWithExpiryFn func(ctx context.Context, userID int64, expiresAt time.Time, rememberMe bool) (*model.Session, error)
 	createWithApiKeyFn func(ctx context.Context, userID int64, apiKeyID int64, expiresAt time.Time, rememberMe bool) (*model.Session, error)
 	createSudoFn       func(ctx context.Context, targetUserID, originalUserID int64) (*model.Session, error)
@@ -138,12 +137,6 @@ type mockSessionRepo struct {
 
 var _ repository.SessionRepo = (*mockSessionRepo)(nil)
 
-func (m *mockSessionRepo) Create(ctx context.Context, userID int64) (*model.Session, error) {
-	if m.createFn != nil {
-		return m.createFn(ctx, userID)
-	}
-	return &model.Session{ID: "mock-session-id", UserID: userID, ExpiresAt: time.Now().Add(24 * time.Hour)}, nil
-}
 func (m *mockSessionRepo) CreateWithExpiry(ctx context.Context, userID int64, expiresAt time.Time, rememberMe bool) (*model.Session, error) {
 	if m.createWithExpiryFn != nil {
 		return m.createWithExpiryFn(ctx, userID, expiresAt, rememberMe)
@@ -255,13 +248,13 @@ func (m *mockApiKeyRepo) UpdateLastUsed(ctx context.Context, id int64) error {
 // unit testing handlers without a database.
 type mockDeviceRepo struct {
 	// Configurable return values.
-	userHasAccessFn func(ctx context.Context, user *model.User, deviceID int64) bool
-	getByIDFn       func(ctx context.Context, id int64) (*model.Device, error)
-	getByUserFn     func(ctx context.Context, userID int64) ([]*model.Device, error)
-	getAllFn        func(ctx context.Context) ([]model.Device, error)
-	createFn        func(ctx context.Context, d *model.Device, userID int64) error
-	updateFn        func(ctx context.Context, d *model.Device) error
-	deleteFn        func(ctx context.Context, id int64) error
+	userHasAccessFn    func(ctx context.Context, user *model.User, deviceID int64) bool
+	getByIDFn          func(ctx context.Context, id int64) (*model.Device, error)
+	getByUserFn        func(ctx context.Context, userID int64) ([]*model.Device, error)
+	getAllWithOwnersFn func(ctx context.Context) ([]*model.Device, error)
+	createFn           func(ctx context.Context, d *model.Device, userID int64) error
+	updateFn           func(ctx context.Context, d *model.Device) error
+	deleteFn           func(ctx context.Context, id int64) error
 }
 
 // Compile-time assertion that mockDeviceRepo satisfies repository.DeviceRepo.
@@ -292,10 +285,7 @@ func (m *mockDeviceRepo) GetByUser(ctx context.Context, userID int64) ([]*model.
 	return nil, nil
 }
 
-func (m *mockDeviceRepo) GetAll(ctx context.Context) ([]model.Device, error) {
-	if m.getAllFn != nil {
-		return m.getAllFn(ctx)
-	}
+func (m *mockDeviceRepo) GetAll(_ context.Context) ([]model.Device, error) {
 	return nil, nil
 }
 
@@ -328,15 +318,11 @@ func (m *mockDeviceRepo) GetTimedOut(_ context.Context, _ time.Time) ([]model.De
 	return nil, nil
 }
 
-func (m *mockDeviceRepo) GetAllWithOwners(ctx context.Context) ([]model.Device, error) {
-	if m.getAllFn != nil {
-		return m.getAllFn(ctx)
+func (m *mockDeviceRepo) GetAllWithOwners(ctx context.Context) ([]*model.Device, error) {
+	if m.getAllWithOwnersFn != nil {
+		return m.getAllWithOwnersFn(ctx)
 	}
 	return nil, nil
-}
-
-func (m *mockDeviceRepo) SetIgnitionState(_ context.Context, _ int64, _ bool, _ time.Time) (bool, error) {
-	return false, nil
 }
 
 func (m *mockDeviceRepo) UpdateProtocol(_ context.Context, _ int64, _ string) error {

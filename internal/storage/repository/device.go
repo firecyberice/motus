@@ -2,10 +2,8 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,29 +29,17 @@ const deviceColumns = `id, unique_id, name, protocol, status, speed_limit, last_
 
 // scanDevice scans deviceColumns, followed by extra, into d.
 func scanDevice(row pgx.Row, d *model.Device, extra ...any) error {
-	var attrs []byte
 	dest := append([]any{
 		&d.ID, &d.UniqueID, &d.Name, &d.Protocol, &d.Status, &d.SpeedLimit, &d.LastUpdate,
 		&d.PositionID, &d.GroupID, &d.Phone, &d.Model, &d.Contact, &d.Category, &d.Disabled,
 		&d.Mileage, &d.PendingMileage,
-		&d.IgnitionOn, &d.LastIgnitionTime, &attrs, &d.BatteryLevel,
+		&d.IgnitionOn, &d.LastIgnitionTime, &d.Attributes, &d.BatteryLevel,
 		&d.CreatedAt, &d.UpdatedAt,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return err
 	}
-	if len(attrs) > 0 {
-		if err := json.Unmarshal(attrs, &d.Attributes); err != nil {
-			slog.Warn("failed to unmarshal device attributes",
-				slog.Int64("deviceID", d.ID),
-				slog.Any("error", err))
-			d.Attributes = make(map[string]any)
-		}
-	}
-	// Always ensure attributes is a non-nil map for Home Assistant
-	// compatibility. HA expects {} (empty object), never null. The JSONB
-	// value "null" round-trips through json.Unmarshal as a nil map, so we
-	// must handle that case as well as SQL NULL (empty bytes).
+	// Home Assistant expects {}, never null; NULL and JSON null both scan to nil.
 	if d.Attributes == nil {
 		d.Attributes = make(map[string]any)
 	}
@@ -62,15 +48,7 @@ func scanDevice(row pgx.Row, d *model.Device, extra ...any) error {
 
 // UserHasAccess checks if a user has access to a device.
 func (r *DeviceRepository) UserHasAccess(ctx context.Context, user *model.User, deviceID int64) bool {
-	if user.IsAdmin() {
-		return true
-	}
-	var exists bool
-	err := r.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM user_devices WHERE user_id = $1 AND device_id = $2)`,
-		user.ID, deviceID,
-	).Scan(&exists)
-	return err == nil && exists
+	return userHasAccess(ctx, r.pool, `SELECT EXISTS(SELECT 1 FROM user_devices WHERE user_id = $1 AND device_id = $2)`, user, deviceID)
 }
 
 // GetByID retrieves a device by its ID.
@@ -127,7 +105,7 @@ func (r *DeviceRepository) GetAll(ctx context.Context) ([]model.Device, error) {
 }
 
 // GetAllWithOwners returns all devices with owner name from user_devices join.
-func (r *DeviceRepository) GetAllWithOwners(ctx context.Context) ([]model.Device, error) {
+func (r *DeviceRepository) GetAllWithOwners(ctx context.Context) ([]*model.Device, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT `+deviceColumns+`, COALESCE(
 			(SELECT u.name FROM user_devices ud JOIN users u ON u.id = ud.user_id WHERE ud.device_id = d.id LIMIT 1),
@@ -139,12 +117,12 @@ func (r *DeviceRepository) GetAllWithOwners(ctx context.Context) ([]model.Device
 	if err != nil {
 		return nil, fmt.Errorf("get all devices with owners: %w", err)
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Device, error) {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (*model.Device, error) {
 		var d model.Device
 		if err := scanDevice(row, &d, &d.OwnerName); err != nil {
-			return model.Device{}, fmt.Errorf("scan device with owner: %w", err)
+			return nil, fmt.Errorf("scan device with owner: %w", err)
 		}
-		return d, nil
+		return &d, nil
 	})
 }
 
@@ -182,14 +160,12 @@ func (r *DeviceRepository) Create(ctx context.Context, d *model.Device, userID i
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	attrs, _ := json.Marshal(d.Attributes)
-
 	err = tx.QueryRow(ctx,
 		`INSERT INTO devices (unique_id, name, protocol, status, speed_limit, phone, model, contact, category, disabled, mileage, attributes)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 RETURNING id, created_at, updated_at`,
 		d.UniqueID, d.Name, d.Protocol, d.Status, d.SpeedLimit,
-		d.Phone, d.Model, d.Contact, d.Category, d.Disabled, d.Mileage, attrs,
+		d.Phone, d.Model, d.Contact, d.Category, d.Disabled, d.Mileage, d.Attributes,
 	).Scan(&d.ID, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert device: %w", err)
@@ -208,8 +184,6 @@ func (r *DeviceRepository) Create(ctx context.Context, d *model.Device, userID i
 
 // Update modifies an existing device.
 func (r *DeviceRepository) Update(ctx context.Context, d *model.Device) error {
-	attrs, _ := json.Marshal(d.Attributes)
-
 	_, err := r.pool.Exec(ctx,
 		`UPDATE devices SET unique_id = $1, name = $2, protocol = $3, status = $4, speed_limit = $5, last_update = $6,
 			position_id = $7, phone = $8, model = $9, contact = $10, category = $11, disabled = $12,
@@ -219,7 +193,7 @@ func (r *DeviceRepository) Update(ctx context.Context, d *model.Device) error {
 		 WHERE id = $18`,
 		d.UniqueID, d.Name, d.Protocol, d.Status, d.SpeedLimit, d.LastUpdate,
 		d.PositionID, d.Phone, d.Model, d.Contact, d.Category, d.Disabled,
-		d.Mileage, d.PendingMileage, attrs,
+		d.Mileage, d.PendingMileage, d.Attributes,
 		d.IgnitionOn, d.LastIgnitionTime,
 		d.ID,
 	)

@@ -264,6 +264,7 @@ func TestUserSetPassword_DoesNotPrintPassword_Integration(t *testing.T) {
 // --- Device commands ---
 
 func TestDeviceAdd_Integration(t *testing.T) {
+	setValidConfigEnv(t)
 	pool := testutil.SetupTestDB(t)
 	defer injectTestDB(t)()
 	testutil.CleanTables(t, pool)
@@ -384,6 +385,9 @@ func TestDeviceList_Integration(t *testing.T) {
 		out := captureStdout(func() { cmd.Run(cmd, nil) })
 		if !strings.Contains(out, "LIST-001") {
 			t.Errorf("output=%s missing LIST-001: %q", output, out)
+		}
+		if output == "csv" && !strings.HasPrefix(out, "ID,UNIQUE ID,NAME,PROTOCOL,STATUS,LAST UPDATE\n") {
+			t.Errorf("csv header differs from table header: %q", out)
 		}
 	}
 }

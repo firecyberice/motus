@@ -63,7 +63,7 @@ func (e *errSubscribePubSub) Subscribe(_ context.Context, _ func([]byte)) error 
 }
 func (e *errSubscribePubSub) Close() error { return nil }
 
-// dummyExtractor is a UserIDExtractor that always returns 0.
+// dummyExtractor is a user ID extractor that always returns 0.
 func dummyExtractor(_ *http.Request) int64 { return 0 }
 
 func TestCheckOrigin(t *testing.T) {
@@ -282,7 +282,7 @@ func TestGetAllowedUserIDs_CacheExpiration(t *testing.T) {
 
 	// Override the cache clock for testing.
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	hub.accessCache.now = func() time.Time { return now }
+	hub.accessCache.Now = func() time.Time { return now }
 
 	// First call: populates cache.
 	hub.getAllowedUserIDs(10)

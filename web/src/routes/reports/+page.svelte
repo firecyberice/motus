@@ -12,13 +12,13 @@
 	import { formatDate, formatDuration, formatDistance, formatSpeed } from '$lib/utils/formatting';
 	import type { Trip } from '$lib/utils/trips';
 	import type { Stop } from '$lib/utils/stops';
-	import { Chart, registerables } from 'chart.js';
+	import { Chart } from '$lib/utils/chart';
+	import { isDark } from '$lib/stores/theme';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import AllDevicesToggle from '$lib/components/AllDevicesToggle.svelte';
 	import DateRangeFilter from '$lib/components/DateRangeFilter.svelte';
-
-	Chart.register(...registerables);
+	import { placeBelowInvoker } from '$lib/utils/popover';
 
 	let chartCanvas: HTMLCanvasElement;
 	let chartInstance: Chart | null = null;
@@ -58,7 +58,6 @@
 	const columnConfig = persisted('motus_report_columns', DEFAULT_COLUMNS, (saved) =>
 		saved && typeof saved === 'object' ? { ...DEFAULT_COLUMNS, ...saved } : null
 	);
-	let showColumnConfig = false;
 
 	const columnLabels: Record<string, string> = {
 		device: 'Device',
@@ -86,6 +85,7 @@
 		? trips.reduce((sum, t) => sum + t.avgSpeed, 0) / trips.length : 0;
 
 	$: if (activeTab === 'summary' && trips.length > 0 && chartCanvas) {
+		$isDark;
 		buildChart();
 	}
 
@@ -110,11 +110,7 @@
 			},
 			options: {
 				responsive: true, maintainAspectRatio: false,
-				plugins: { legend: { labels: { color: '#a0a0a0' } } },
-				scales: {
-					x: { ticks: { color: '#a0a0a0', maxRotation: 45 }, grid: { color: '#3a3a3a' } },
-					y: { ticks: { color: '#a0a0a0' }, grid: { color: '#3a3a3a' } }
-				}
+				scales: { x: { ticks: { maxRotation: 45 } } }
 			}
 		});
 	}
@@ -237,8 +233,7 @@
 
 <svelte:head><title>Reports - Motus</title></svelte:head>
 
-<!-- svelte-ignore a11y-click-events-have-key-events -->
-<div class="reports-page" on:click={() => { if (showColumnConfig) showColumnConfig = false; }} role="presentation">
+<div class="reports-page">
 	<div class="container">
 		<div class="page-header">
 			<h1 class="page-title">Reports</h1>
@@ -310,10 +305,10 @@
 					</select>
 				</div>
 				<div class="column-settings">
-					<!-- svelte-ignore a11y-click-events-have-key-events -->
 					<button
 						class="settings-btn"
-						on:click|stopPropagation={() => showColumnConfig = !showColumnConfig}
+						popovertarget="column-dropdown"
+						style="anchor-name: --column-settings"
 						aria-label="Configure columns"
 						title="Configure columns"
 					>
@@ -323,24 +318,22 @@
 						</svg>
 						Columns
 					</button>
-					{#if showColumnConfig}
-						<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-						<div
-							class="column-dropdown"
-							on:click|stopPropagation
-							on:keydown={(e) => e.key === 'Escape' && (showColumnConfig = false)}
-							role="group"
-							aria-label="Column visibility options"
-							tabindex="-1"
-						>
-							{#each Object.keys(columnLabels) as key}
-								<label class="column-option">
-									<input type="checkbox" bind:checked={$columnConfig[key]} />
-									{columnLabels[key]}
-								</label>
-							{/each}
-						</div>
-					{/if}
+					<div
+						id="column-dropdown"
+						class="column-dropdown menu-popover"
+						popover
+						style="position-anchor: --column-settings"
+						on:toggle={placeBelowInvoker}
+						role="group"
+						aria-label="Column visibility options"
+					>
+						{#each Object.keys(columnLabels) as key}
+							<label class="column-option">
+								<input type="checkbox" bind:checked={$columnConfig[key]} />
+								{columnLabels[key]}
+							</label>
+						{/each}
+					</div>
 				</div>
 			</div>
 			{#if trips.length > pageSize}
@@ -479,9 +472,6 @@
 		display: flex; justify-content: space-between; align-items: center;
 		margin-bottom: var(--space-3);
 	}
-	.column-settings {
-		position: relative;
-	}
 	.settings-btn {
 		display: flex; align-items: center; gap: var(--space-2);
 		padding: var(--space-2) var(--space-3);
@@ -494,11 +484,10 @@
 		background-color: var(--bg-hover); color: var(--text-primary);
 	}
 	.column-dropdown {
-		position: absolute; top: calc(100% + var(--space-2)); right: 0;
 		background-color: var(--bg-secondary);
 		border: 1px solid var(--border-color); border-radius: var(--radius-md);
 		box-shadow: var(--shadow-lg); min-width: 180px;
-		z-index: 100; padding: var(--space-2);
+		padding: var(--space-2);
 	}
 	.column-option {
 		display: flex; align-items: center; gap: var(--space-2);

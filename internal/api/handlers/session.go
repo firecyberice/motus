@@ -16,11 +16,6 @@ import (
 const (
 	// sessionExpiryDefault is the duration for standard login sessions (24 hours).
 	sessionExpiryDefault = 24 * time.Hour
-
-	// sessionExpiryRememberMe is the initial duration for "remember me" and
-	// token-based login sessions (30 days). Active sessions are extended via
-	// session rolling in the auth middleware before this window closes.
-	sessionExpiryRememberMe = 30 * 24 * time.Hour
 )
 
 // setSessionCookie writes the session_id cookie; a past expiry clears it.
@@ -73,14 +68,14 @@ func (h *Handler) Login(ctx context.Context, req oas.LoginReq) (oas.LoginRes, er
 	if err != nil {
 		h.loginLimiter.recordFailure(email)
 		h.cfg.AuditLogger.Log(ctx, nil, audit.ActionSessionLoginFailed, audit.ResourceSession, nil,
-			map[string]any{"email": email, "reason": "unknown_email"}, "", "")
+			map[string]any{"email": email, "reason": "unknown_email"})
 		return &oas.LoginUnauthorized{Error: "invalid credentials"}, nil
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		h.loginLimiter.recordFailure(email)
 		h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLoginFailed, audit.ResourceSession, nil,
-			map[string]any{"email": email, "reason": "wrong_password"}, "", "")
+			map[string]any{"email": email, "reason": "wrong_password"})
 		return &oas.LoginUnauthorized{Error: "invalid credentials"}, nil
 	}
 
@@ -88,7 +83,7 @@ func (h *Handler) Login(ctx context.Context, req oas.LoginReq) (oas.LoginRes, er
 
 	var expiresAt time.Time
 	if remember {
-		expiresAt = time.Now().Add(sessionExpiryRememberMe)
+		expiresAt = time.Now().Add(api.SessionExpiryRememberMe)
 	} else {
 		expiresAt = time.Now().Add(sessionExpiryDefault)
 	}
@@ -101,7 +96,7 @@ func (h *Handler) Login(ctx context.Context, req oas.LoginReq) (oas.LoginRes, er
 	h.setSessionCookie(ctx, session.ID, session.ExpiresAt)
 
 	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLogin, audit.ResourceSession, nil,
-		map[string]any{"email": user.Email}, "", "")
+		map[string]any{"email": user.Email})
 
 	out := userToOAS(user)
 	return &out, nil
@@ -111,7 +106,7 @@ func (h *Handler) Login(ctx context.Context, req oas.LoginReq) (oas.LoginRes, er
 func (h *Handler) Logout(ctx context.Context) (oas.LogoutRes, error) {
 	user := api.UserFromContext(ctx)
 	if user != nil {
-		h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLogout, audit.ResourceSession, nil, nil, "", "")
+		h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLogout, audit.ResourceSession, nil, nil)
 	}
 
 	session := api.SessionFromContext(ctx)
@@ -141,7 +136,7 @@ func (h *Handler) LogoutAll(ctx context.Context) (oas.LogoutAllRes, error) {
 	}
 
 	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionRevoke, audit.ResourceSession, nil,
-		map[string]any{"scope": "all_other_sessions"}, "", "")
+		map[string]any{"scope": "all_other_sessions"})
 
 	return &oas.LogoutAllNoContent{}, nil
 }
@@ -165,14 +160,14 @@ func (h *Handler) GetSession(ctx context.Context, params oas.GetSessionParams) (
 // tokenLogin authenticates via an API-key token (with legacy users.token
 // fallback) and establishes a session cookie.
 func (h *Handler) tokenLogin(ctx context.Context, token string) (oas.GetSessionRes, error) {
-	user, apiKey := h.resolveLoginToken(ctx, token)
+	user, apiKey := api.ResolveToken(ctx, h.cfg.Users, h.cfg.ApiKeys, token)
 	if user == nil {
 		return &oas.Error{Error: "invalid token"}, nil
 	}
 
 	// Token-based login uses the same expiry as "remember me" so the
 	// session survives browser/app restarts.
-	tokenExpiry := time.Now().Add(sessionExpiryRememberMe)
+	tokenExpiry := time.Now().Add(api.SessionExpiryRememberMe)
 
 	// Link the session to the API key so the auth middleware can restore
 	// the key's permission level on subsequent cookie requests.
@@ -193,31 +188,10 @@ func (h *Handler) tokenLogin(ctx context.Context, token string) (oas.GetSessionR
 	if apiKey != nil {
 		details["apiKeyId"] = apiKey.ID
 	}
-	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLogin, audit.ResourceSession, nil, details, "", "")
+	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionLogin, audit.ResourceSession, nil, details)
 
 	out := userToOAS(user)
 	return &out, nil
-}
-
-// resolveLoginToken resolves a login token to a user: api_keys first
-// (modern keys), then the legacy users.token column.
-func (h *Handler) resolveLoginToken(ctx context.Context, token string) (*model.User, *model.ApiKey) {
-	if h.cfg.ApiKeys != nil {
-		apiKey, err := h.cfg.ApiKeys.GetByToken(ctx, token)
-		if err == nil && apiKey != nil {
-			user, err := h.cfg.Users.GetByID(ctx, apiKey.UserID)
-			if err == nil && user != nil {
-				return user, apiKey
-			}
-		}
-	}
-
-	user, err := h.cfg.Users.GetByToken(ctx, token)
-	if err == nil && user != nil {
-		return user, nil
-	}
-
-	return nil, nil
 }
 
 // ListSessions returns all active (non-sudo) sessions for the authenticated user.
@@ -286,7 +260,7 @@ func (h *Handler) DeleteSession(ctx context.Context, params oas.DeleteSessionPar
 	}
 
 	h.cfg.AuditLogger.Log(ctx, &user.ID, audit.ActionSessionRevoke, audit.ResourceSession, nil,
-		map[string]any{"revokedSessionId": target.TruncatedID(), "sessionOwnerUserId": target.UserID}, "", "")
+		map[string]any{"revokedSessionId": target.TruncatedID(), "sessionOwnerUserId": target.UserID})
 
 	return &oas.DeleteSessionNoContent{}, nil
 }

@@ -1,11 +1,10 @@
 package repository
 
 import (
+	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 
@@ -58,34 +57,27 @@ func isWKT(s string) bool {
 		strings.HasPrefix(upper, "MULTIPOLYGON")
 }
 
+// geomParam returns the SQL expression for parameter $3 and its value, taken
+// from Geometry (GeoJSON or WKT) or, if empty, Area (WKT).
+func geomParam(g *model.Geofence) (string, string) {
+	input := cmp.Or(g.Geometry, g.Area)
+	if isWKT(input) {
+		return "ST_GeomFromText($3, 4326)", input
+	}
+	return "ST_GeomFromGeoJSON($3)", input
+}
+
 // Create inserts a new geofence. The geometry field accepts GeoJSON or WKT.
 func (r *GeofenceRepository) Create(ctx context.Context, g *model.Geofence) error {
-	attrs, err := json.Marshal(g.Attributes)
-	if err != nil {
-		return fmt.Errorf("marshal attributes: %w", err)
-	}
-
-	// Determine which input we have: the Area (WKT) or Geometry (GeoJSON).
-	geomInput := g.Geometry
-	if geomInput == "" {
-		geomInput = g.Area
-	}
-
-	var geomExpr string
-	if isWKT(geomInput) {
-		geomExpr = "ST_GeomFromText($3, 4326)"
-	} else {
-		geomExpr = "ST_GeomFromGeoJSON($3)"
-	}
-
+	geomExpr, geomInput := geomParam(g)
 	query := fmt.Sprintf(`
 		INSERT INTO geofences (name, description, geometry, attributes, calendar_id, created_at, updated_at)
 		VALUES ($1, $2, %s, $4, $5, NOW(), NOW())
 		RETURNING id, ST_AsText(geometry), ST_AsGeoJSON(geometry), calendar_id, created_at, updated_at
 	`, geomExpr)
 
-	err = r.pool.QueryRow(ctx, query,
-		g.Name, g.Description, geomInput, attrs, g.CalendarID,
+	err := r.pool.QueryRow(ctx, query,
+		g.Name, g.Description, geomInput, g.Attributes, g.CalendarID,
 	).Scan(&g.ID, &g.Area, &g.Geometry, &g.CalendarID, &g.CreatedAt, &g.UpdatedAt)
 	if err != nil {
 		return geometryError("create geofence", err)
@@ -151,32 +143,15 @@ func (r *GeofenceRepository) GetAllWithOwners(ctx context.Context) ([]*model.Geo
 
 // Update modifies an existing geofence. Accepts GeoJSON or WKT for geometry.
 func (r *GeofenceRepository) Update(ctx context.Context, g *model.Geofence) error {
-	attrs, err := json.Marshal(g.Attributes)
-	if err != nil {
-		return fmt.Errorf("marshal attributes: %w", err)
-	}
-
-	// Use Area (WKT) or Geometry (GeoJSON) as geometry input.
-	geomInput := g.Geometry
-	if geomInput == "" {
-		geomInput = g.Area
-	}
-
-	var geomExpr string
-	if isWKT(geomInput) {
-		geomExpr = "ST_GeomFromText($3, 4326)"
-	} else {
-		geomExpr = "ST_GeomFromGeoJSON($3)"
-	}
-
+	geomExpr, geomInput := geomParam(g)
 	query := fmt.Sprintf(`
 		UPDATE geofences
 		SET name = $1, description = $2, geometry = %s, attributes = $4, calendar_id = $5, updated_at = NOW()
 		WHERE id = $6
 	`, geomExpr)
 
-	_, err = r.pool.Exec(ctx, query,
-		g.Name, g.Description, geomInput, attrs, g.CalendarID, g.ID,
+	_, err := r.pool.Exec(ctx, query,
+		g.Name, g.Description, geomInput, g.Attributes, g.CalendarID, g.ID,
 	)
 	if err != nil {
 		return geometryError("update geofence", err)
@@ -208,15 +183,7 @@ func (r *GeofenceRepository) AssociateUser(ctx context.Context, userID, geofence
 
 // UserHasAccess checks if a user has access to a geofence.
 func (r *GeofenceRepository) UserHasAccess(ctx context.Context, user *model.User, geofenceID int64) bool {
-	if user.IsAdmin() {
-		return true
-	}
-	var exists bool
-	err := r.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM user_geofences WHERE user_id = $1 AND geofence_id = $2)`,
-		user.ID, geofenceID,
-	).Scan(&exists)
-	return err == nil && exists
+	return userHasAccess(ctx, r.pool, `SELECT EXISTS(SELECT 1 FROM user_geofences WHERE user_id = $1 AND geofence_id = $2)`, user, geofenceID)
 }
 
 // CheckContainmentForDevice returns the deduplicated IDs of geofences associated
@@ -240,20 +207,7 @@ func (r *GeofenceRepository) CheckContainmentForDevice(ctx context.Context, devi
 
 // scanGeofence scans a geofence row, followed by extra, into g.
 func scanGeofence(row pgx.Row, g *model.Geofence, extra ...any) error {
-	var attrs []byte
-	dest := append([]any{&g.ID, &g.Name, &g.Description, &g.Area, &g.Geometry, &attrs, &g.CalendarID, &g.CreatedAt, &g.UpdatedAt}, extra...)
-	if err := row.Scan(dest...); err != nil {
-		return err
-	}
-	if len(attrs) > 0 {
-		if err := json.Unmarshal(attrs, &g.Attributes); err != nil {
-			slog.Warn("failed to unmarshal geofence attributes",
-				slog.Int64("geofenceID", g.ID),
-				slog.Any("error", err))
-			g.Attributes = make(map[string]any)
-		}
-	}
-	return nil
+	return row.Scan(append([]any{&g.ID, &g.Name, &g.Description, &g.Area, &g.Geometry, &g.Attributes, &g.CalendarID, &g.CreatedAt, &g.UpdatedAt}, extra...)...)
 }
 
 func rowToGeofence(row pgx.CollectableRow) (*model.Geofence, error) {

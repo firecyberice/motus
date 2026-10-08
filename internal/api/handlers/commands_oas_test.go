@@ -93,16 +93,26 @@ func accessGrantingDeviceRepo(uniqueID, proto string) *mockDeviceRepo {
 	}
 }
 
-// newCommandTestHandler builds an ogen Handler for command tests. registry
-// and encoders may be nil (device treated as offline / custom-only payloads).
+// newCommandTestHandler builds an ogen Handler for command tests. A nil
+// registry or encoders is replaced by an empty one (device offline).
 func newCommandTestHandler(commands repository.CommandRepo, devices repository.DeviceRepo,
 	registry *protocol.DeviceRegistry, encoders *protocol.EncoderRegistry) *handlers.Handler {
+	if registry == nil {
+		registry = protocol.NewDeviceRegistry()
+	}
+	if encoders == nil {
+		encoders = protocol.NewEncoderRegistry(registry)
+	}
 	return handlers.NewHandler(handlers.HandlerConfig{
 		Commands:        commands,
 		Devices:         devices,
-		DeviceRegistry:  registry,
 		EncoderRegistry: encoders,
-		AuditLogger:     audit.NewLogger(nil),
+		CommandSubmitter: &protocol.CommandSubmitter{
+			Commands: commands,
+			Encoders: encoders,
+			Registry: registry,
+		},
+		AuditLogger: audit.NewLogger(nil),
 	})
 }
 

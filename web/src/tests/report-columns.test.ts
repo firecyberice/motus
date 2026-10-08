@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
-import { readable } from "svelte/store";
+import { readable, writable } from "svelte/store";
 
 vi.mock("$app/stores", () => ({
   page: readable({ url: new URL("http://localhost/reports") }),
 }));
+vi.mock("$lib/stores/theme", () => ({ isDark: writable(false) }));
 vi.mock("$lib/api/client", () => ({
   api: {
     getActivityReport: vi.fn().mockResolvedValue({
@@ -38,9 +39,9 @@ describe("reports column config", () => {
     localStorage.setItem(KEY, JSON.stringify({ device: false }));
     render(ReportsPage);
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Configure columns" }));
-    const device = screen.getByRole("checkbox", { name: "Device" }) as HTMLInputElement;
-    const distance = screen.getByRole("checkbox", { name: "Distance" }) as HTMLInputElement;
+    await screen.findByRole("button", { name: "Configure columns" });
+    const device = screen.getByRole("checkbox", { name: "Device", hidden: true }) as HTMLInputElement;
+    const distance = screen.getByRole("checkbox", { name: "Distance", hidden: true }) as HTMLInputElement;
     expect(device.checked).toBe(false);
     expect(distance.checked).toBe(true);
 

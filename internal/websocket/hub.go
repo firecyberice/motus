@@ -15,6 +15,7 @@ import (
 	"github.com/tamcore/motus/internal/metrics"
 	"github.com/tamcore/motus/internal/model"
 	"github.com/tamcore/motus/internal/pubsub"
+	"github.com/tamcore/motus/internal/ttlcache"
 )
 
 const (
@@ -28,25 +29,15 @@ const (
 
 	// writeWait is the time allowed to write a message to the client.
 	writeWait = 10 * time.Second
+
+	// defaultCacheTTL is how long cached user-device access entries remain valid.
+	defaultCacheTTL = 30 * time.Second
 )
 
 // DeviceAccessChecker resolves which users have access to a given device.
 type DeviceAccessChecker interface {
 	GetUserIDs(ctx context.Context, deviceID int64) ([]int64, error)
 }
-
-// UserIDExtractor extracts a user ID from an HTTP request. Returns 0
-// if the user is not authenticated.
-type UserIDExtractor func(r *http.Request) int64
-
-// AdminChecker reports whether the user identified by userID has administrator
-// privileges. Called once per WebSocket connection to avoid per-message DB
-// lookups. Return false on error or if the user is not an admin.
-type AdminChecker func(ctx context.Context, userID int64) bool
-
-// ShareTokenValidator validates a share token and returns the associated device ID.
-// Returns deviceID > 0 if valid, 0 if invalid/expired.
-type ShareTokenValidator func(ctx context.Context, token string) (deviceID int64, err error)
 
 // Client represents a connected WebSocket user.
 type Client struct {
@@ -83,28 +74,28 @@ type Hub struct {
 	isDevelopment      bool
 	upgrader           websocket.Upgrader
 	accessChecker      DeviceAccessChecker
-	adminChecker       AdminChecker
-	extractUserID      UserIDExtractor
-	shareValidator     ShareTokenValidator
+	adminChecker       func(ctx context.Context, userID int64) bool
+	extractUserID      func(r *http.Request) int64
+	shareValidator     func(ctx context.Context, token string) (deviceID int64, err error)
 	pubsub             pubsub.PubSub
 	invalidationPubSub pubsub.PubSub
 	podID              string // unique identifier for this pod instance
-	accessCache        *deviceAccessCache
+	accessCache        *ttlcache.Cache[int64, []int64]
 	logger             *slog.Logger
 }
 
 // NewHub creates a new WebSocket hub with origin validation and per-user filtering.
 // If allowedOrigins is empty, only localhost origins are permitted (dev mode).
 // accessChecker determines which users can see which device data.
-// extractUserID extracts the authenticated user ID from an HTTP request.
-func NewHub(allowedOrigins []string, accessChecker DeviceAccessChecker, extractUserID UserIDExtractor) *Hub {
+// extractUserID returns the authenticated user ID from a request, or 0.
+func NewHub(allowedOrigins []string, accessChecker DeviceAccessChecker, extractUserID func(r *http.Request) int64) *Hub {
 	h := &Hub{
 		clients:        make(map[*Client]bool),
 		allowedOrigins: allowedOrigins,
 		accessChecker:  accessChecker,
 		extractUserID:  extractUserID,
 		podID:          rand.Text(),
-		accessCache:    newDeviceAccessCache(),
+		accessCache:    ttlcache.New[int64, []int64](defaultCacheTTL),
 		logger:         slog.Default(),
 	}
 	h.upgrader = websocket.Upgrader{
@@ -153,21 +144,22 @@ func (h *Hub) StartInvalidationSubscriber(ctx context.Context) {
 			slog.Int64("deviceID", env.DeviceID),
 			slog.String("fromPod", env.OriginPodID),
 		)
-		h.accessCache.invalidate(env.DeviceID)
+		h.accessCache.Delete(env.DeviceID)
 	})
 }
 
 // SetShareTokenValidator configures share token validation for the hub.
 // When set, unauthenticated WebSocket connections can provide a shareToken
 // query parameter to receive position updates for a specific shared device.
-func (h *Hub) SetShareTokenValidator(v ShareTokenValidator) {
+// v returns the shared device ID, or 0 if the token is invalid or expired.
+func (h *Hub) SetShareTokenValidator(v func(ctx context.Context, token string) (deviceID int64, err error)) {
 	h.shareValidator = v
 }
 
 // SetAdminChecker configures admin detection for the hub. When set, it is called
 // once per authenticated WebSocket connection. Admin clients bypass per-device
-// access filtering and receive broadcasts for all devices.
-func (h *Hub) SetAdminChecker(fn AdminChecker) {
+// access filtering and receive broadcasts for all devices. fn returns false on error.
+func (h *Hub) SetAdminChecker(fn func(ctx context.Context, userID int64) bool) {
 	h.adminChecker = fn
 }
 
@@ -308,7 +300,6 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 	clientCount := len(h.clients)
 	h.mu.Unlock()
 	metrics.WebSocketConnections.Inc()
-	metrics.WebSocketConnectionsByPod.WithLabelValues(h.podID).Inc()
 
 	if sharedDeviceID > 0 {
 		h.logger.Info("share client connected",
@@ -369,7 +360,6 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 			h.mu.Unlock()
 			_ = conn.Close()
 			metrics.WebSocketConnections.Dec()
-			metrics.WebSocketConnectionsByPod.WithLabelValues(h.podID).Dec()
 			if sharedDeviceID > 0 {
 				h.logger.Info("share client disconnected",
 					slog.Int64("deviceID", sharedDeviceID),
@@ -552,7 +542,7 @@ func (h *Hub) getAllowedUserIDs(deviceID int64) []int64 {
 	}
 
 	// Check cache first.
-	if ids, ok := h.accessCache.get(deviceID); ok {
+	if ids, ok := h.accessCache.Get(deviceID); ok {
 		return ids
 	}
 
@@ -567,7 +557,7 @@ func (h *Hub) getAllowedUserIDs(deviceID int64) []int64 {
 	}
 
 	// Store in cache for subsequent broadcasts.
-	h.accessCache.set(deviceID, userIDs)
+	h.accessCache.Set(deviceID, userIDs)
 	return userIDs
 }
 
@@ -576,7 +566,7 @@ func (h *Hub) getAllowedUserIDs(deviceID int64) []int64 {
 // so that all other pods evict the same entry immediately. The local eviction
 // always happens regardless of whether the publish succeeds.
 func (h *Hub) InvalidateDevice(deviceID int64) {
-	h.accessCache.invalidate(deviceID)
+	h.accessCache.Delete(deviceID)
 	if h.invalidationPubSub != nil {
 		env := redisEnvelope{OriginPodID: h.podID, DeviceID: deviceID}
 		if err := h.invalidationPubSub.Publish(context.Background(), env); err != nil {
