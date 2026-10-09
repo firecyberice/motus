@@ -4674,6 +4674,14 @@ type NotificationLog struct {
 	SentAt       OptNilDateTime `json:"sentAt"`
 	Error        OptString      `json:"error"`
 	ResponseCode OptInt         `json:"responseCode"`
+	CreatedAt    time.Time      `json:"createdAt"`
+	// Type of the triggering event (absent when the event was deleted).
+	EventType       OptString          `json:"eventType"`
+	EventTime       OptNilDateTime     `json:"eventTime"`
+	DeviceId        OptNilInt64        `json:"deviceId"`
+	DeviceName      OptString          `json:"deviceName"`
+	GeofenceName    OptString          `json:"geofenceName"`
+	EventAttributes OptEventAttributes `json:"eventAttributes"`
 }
 
 // GetID returns the value of ID.
@@ -4711,6 +4719,41 @@ func (s *NotificationLog) GetResponseCode() OptInt {
 	return s.ResponseCode
 }
 
+// GetCreatedAt returns the value of CreatedAt.
+func (s *NotificationLog) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetEventType returns the value of EventType.
+func (s *NotificationLog) GetEventType() OptString {
+	return s.EventType
+}
+
+// GetEventTime returns the value of EventTime.
+func (s *NotificationLog) GetEventTime() OptNilDateTime {
+	return s.EventTime
+}
+
+// GetDeviceId returns the value of DeviceId.
+func (s *NotificationLog) GetDeviceId() OptNilInt64 {
+	return s.DeviceId
+}
+
+// GetDeviceName returns the value of DeviceName.
+func (s *NotificationLog) GetDeviceName() OptString {
+	return s.DeviceName
+}
+
+// GetGeofenceName returns the value of GeofenceName.
+func (s *NotificationLog) GetGeofenceName() OptString {
+	return s.GeofenceName
+}
+
+// GetEventAttributes returns the value of EventAttributes.
+func (s *NotificationLog) GetEventAttributes() OptEventAttributes {
+	return s.EventAttributes
+}
+
 // SetID sets the value of ID.
 func (s *NotificationLog) SetID(val int64) {
 	s.ID = val
@@ -4744,6 +4787,41 @@ func (s *NotificationLog) SetError(val OptString) {
 // SetResponseCode sets the value of ResponseCode.
 func (s *NotificationLog) SetResponseCode(val OptInt) {
 	s.ResponseCode = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *NotificationLog) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetEventType sets the value of EventType.
+func (s *NotificationLog) SetEventType(val OptString) {
+	s.EventType = val
+}
+
+// SetEventTime sets the value of EventTime.
+func (s *NotificationLog) SetEventTime(val OptNilDateTime) {
+	s.EventTime = val
+}
+
+// SetDeviceId sets the value of DeviceId.
+func (s *NotificationLog) SetDeviceId(val OptNilInt64) {
+	s.DeviceId = val
+}
+
+// SetDeviceName sets the value of DeviceName.
+func (s *NotificationLog) SetDeviceName(val OptString) {
+	s.DeviceName = val
+}
+
+// SetGeofenceName sets the value of GeofenceName.
+func (s *NotificationLog) SetGeofenceName(val OptString) {
+	s.GeofenceName = val
+}
+
+// SetEventAttributes sets the value of EventAttributes.
+func (s *NotificationLog) SetEventAttributes(val OptEventAttributes) {
+	s.EventAttributes = val
 }
 
 type NotificationLogsForbidden Error

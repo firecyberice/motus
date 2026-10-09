@@ -4,14 +4,13 @@
 	import { api, fetchNotifications } from '$lib/api/client';
 	import { refreshHandler } from '$lib/stores/refresh';
 	import { formatDate } from '$lib/utils/formatting';
-	import { getEventLabel } from '$lib/utils/notificationRules';
 	import type { NotificationRule, NotificationLog } from '$lib/types/api';
+	import NotificationLogDetails from '$lib/components/NotificationLogDetails.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
 
 	interface EnrichedLog extends NotificationLog {
 		ruleName: string;
-		eventTypes: string[];
 		channel: string;
 	}
 
@@ -47,7 +46,6 @@
 					return ruleLogs.map((log) => ({
 						...log,
 						ruleName: rule.name,
-						eventTypes: rule.eventTypes,
 						channel: rule.channel
 					}));
 				} catch {
@@ -168,11 +166,7 @@
 							<tr class:row-success={log.status === 'sent'} class:row-failure={log.status === 'failed'}>
 								<td class="cell-time">{log.sentAt ? formatDate(log.sentAt) : '-'}</td>
 								<td class="cell-rule">{log.ruleName}</td>
-								<td>
-									{#each log.eventTypes as et}
-										<span class="event-badge">{getEventLabel(et)}</span>
-									{/each}
-								</td>
+								<td class="cell-event"><NotificationLogDetails {log} /></td>
 								<td>
 									<span class="channel-badge channel-{log.channel}">{log.channel}</span>
 								</td>
@@ -310,10 +304,6 @@
 
 	.cell-rule {
 		font-weight: var(--font-medium);
-	}
-
-	.event-badge {
-		white-space: nowrap;
 	}
 
 	.channel-badge {

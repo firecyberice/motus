@@ -455,13 +455,20 @@ func notificationLogToOAS(l *model.NotificationLog) oas.NotificationLog {
 		code = oas.OptInt{Value: l.ResponseCode, Set: true}
 	}
 	return oas.NotificationLog{
-		ID:           l.ID,
-		RuleId:       l.RuleID,
-		EventId:      ptrToOptInt64(l.EventID),
-		Status:       l.Status,
-		SentAt:       ptrToOptTime(l.SentAt),
-		Error:        optStr(l.Error),
-		ResponseCode: code,
+		ID:              l.ID,
+		RuleId:          l.RuleID,
+		EventId:         ptrToOptInt64(l.EventID),
+		Status:          l.Status,
+		SentAt:          ptrToOptTime(l.SentAt),
+		Error:           optStr(l.Error),
+		ResponseCode:    code,
+		CreatedAt:       l.CreatedAt,
+		EventType:       optStr(l.EventType),
+		EventTime:       ptrToOptTime(l.EventTime),
+		DeviceId:        ptrToOptInt64(l.DeviceID),
+		DeviceName:      optStr(l.DeviceName),
+		GeofenceName:    optStr(l.GeofenceName),
+		EventAttributes: buildEventAttributes(l.EventType, l.EventAttributes),
 	}
 }
 

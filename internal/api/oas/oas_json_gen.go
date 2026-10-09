@@ -14600,16 +14600,63 @@ func (s *NotificationLog) encodeFields(e *jx.Encoder) {
 			s.ResponseCode.Encode(e)
 		}
 	}
+	{
+		e.FieldStart("createdAt")
+		json.EncodeDateTime(e, s.CreatedAt)
+	}
+	{
+		if s.EventType.Set {
+			e.FieldStart("eventType")
+			s.EventType.Encode(e)
+		}
+	}
+	{
+		if s.EventTime.Set {
+			e.FieldStart("eventTime")
+			s.EventTime.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		if s.DeviceId.Set {
+			e.FieldStart("deviceId")
+			s.DeviceId.Encode(e)
+		}
+	}
+	{
+		if s.DeviceName.Set {
+			e.FieldStart("deviceName")
+			s.DeviceName.Encode(e)
+		}
+	}
+	{
+		if s.GeofenceName.Set {
+			e.FieldStart("geofenceName")
+			s.GeofenceName.Encode(e)
+		}
+	}
+	{
+		if s.EventAttributes.Set {
+			e.FieldStart("eventAttributes")
+			s.EventAttributes.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfNotificationLog = [7]string{
-	0: "id",
-	1: "ruleId",
-	2: "eventId",
-	3: "status",
-	4: "sentAt",
-	5: "error",
-	6: "responseCode",
+var jsonFieldsNameOfNotificationLog = [14]string{
+	0:  "id",
+	1:  "ruleId",
+	2:  "eventId",
+	3:  "status",
+	4:  "sentAt",
+	5:  "error",
+	6:  "responseCode",
+	7:  "createdAt",
+	8:  "eventType",
+	9:  "eventTime",
+	10: "deviceId",
+	11: "deviceName",
+	12: "geofenceName",
+	13: "eventAttributes",
 }
 
 // Decode decodes NotificationLog from json.
@@ -14617,7 +14664,7 @@ func (s *NotificationLog) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode NotificationLog to nil")
 	}
-	var requiredBitSet [1]uint8
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -14697,6 +14744,78 @@ func (s *NotificationLog) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"responseCode\"")
 			}
+		case "createdAt":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				v, err := json.DecodeDateTime(d)
+				s.CreatedAt = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"createdAt\"")
+			}
+		case "eventType":
+			if err := func() error {
+				s.EventType.Reset()
+				if err := s.EventType.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"eventType\"")
+			}
+		case "eventTime":
+			if err := func() error {
+				s.EventTime.Reset()
+				if err := s.EventTime.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"eventTime\"")
+			}
+		case "deviceId":
+			if err := func() error {
+				s.DeviceId.Reset()
+				if err := s.DeviceId.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"deviceId\"")
+			}
+		case "deviceName":
+			if err := func() error {
+				s.DeviceName.Reset()
+				if err := s.DeviceName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"deviceName\"")
+			}
+		case "geofenceName":
+			if err := func() error {
+				s.GeofenceName.Reset()
+				if err := s.GeofenceName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"geofenceName\"")
+			}
+		case "eventAttributes":
+			if err := func() error {
+				s.EventAttributes.Reset()
+				if err := s.EventAttributes.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"eventAttributes\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -14706,8 +14825,9 @@ func (s *NotificationLog) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [1]uint8{
-		0b00001011,
+	for i, mask := range [2]uint8{
+		0b10001011,
+		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
