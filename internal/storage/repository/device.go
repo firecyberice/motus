@@ -152,7 +152,8 @@ func (r *DeviceRepository) GetUserIDs(ctx context.Context, deviceID int64) ([]in
 	return pgx.AppendRows([]int64(nil), rows, pgx.RowTo[int64])
 }
 
-// Create inserts a new device and associates it with a user.
+// Create inserts a new device, associates it with a user and attaches
+// d.GeofenceIDs, all in one transaction.
 func (r *DeviceRepository) Create(ctx context.Context, d *model.Device, userID int64) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -177,6 +178,10 @@ func (r *DeviceRepository) Create(ctx context.Context, d *model.Device, userID i
 	)
 	if err != nil {
 		return fmt.Errorf("associate device with user: %w", err)
+	}
+
+	if err := attachGeofences(ctx, tx, d.ID, d.GeofenceIDs); err != nil {
+		return err
 	}
 
 	return tx.Commit(ctx)
@@ -266,6 +271,63 @@ func (r *DeviceRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM devices WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete device: %w", err)
+	}
+	return nil
+}
+
+// GetGeofenceIDs returns the attached geofence IDs (sorted) of the given
+// devices. Devices without attachments are absent from the map.
+func (r *DeviceRepository) GetGeofenceIDs(ctx context.Context, deviceIDs []int64) (map[int64][]int64, error) {
+	result := make(map[int64][]int64)
+	if len(deviceIDs) == 0 {
+		return result, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT device_id, geofence_id FROM device_geofences
+		 WHERE device_id = ANY($1)
+		 ORDER BY device_id, geofence_id`, deviceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get device geofence ids: %w", err)
+	}
+	var deviceID, geofenceID int64
+	_, err = pgx.ForEachRow(rows, []any{&deviceID, &geofenceID}, func() error {
+		result[deviceID] = append(result[deviceID], geofenceID)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan device geofence ids: %w", err)
+	}
+	return result, nil
+}
+
+// SetGeofences replaces the geofences attached to a device. An empty slice
+// clears all attachments.
+func (r *DeviceRepository) SetGeofences(ctx context.Context, deviceID int64, geofenceIDs []int64) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin set device geofences: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM device_geofences WHERE device_id = $1`, deviceID); err != nil {
+		return fmt.Errorf("clear device geofences: %w", err)
+	}
+	if err := attachGeofences(ctx, tx, deviceID, geofenceIDs); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// attachGeofences adds geofence attachments of a device within tx.
+func attachGeofences(ctx context.Context, tx pgx.Tx, deviceID int64, geofenceIDs []int64) error {
+	if len(geofenceIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO device_geofences (device_id, geofence_id)
+		 SELECT $1, unnest($2::bigint[])
+		 ON CONFLICT DO NOTHING`, deviceID, geofenceIDs); err != nil {
+		return fmt.Errorf("attach device geofences: %w", err)
 	}
 	return nil
 }
